@@ -1,10 +1,17 @@
 # coding=utf-8
-import smbus
-from ina219 import INA219
-from ina219 import DeviceRangeError
+import os
+import sys
 import time
 
+import smbus
+from ina219 import INA219, DeviceRangeError
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
+import config
+
 SHUNT_OHMS = 0.08
+INA219_ADDRESS = config.INA219_ADDRESS
+
 
 def is_ina219_present(address):
     try:
@@ -14,31 +21,33 @@ def is_ina219_present(address):
     except Exception:
         return False
 
+
 def fetch_ina219_data():
     data = {}
-    if is_ina219_present(0x40):  # Check if the INA219 is present at address 0x40
+    if is_ina219_present(INA219_ADDRESS):  # Check if the INA219 is present
         try:
-            ina = INA219(SHUNT_OHMS, address=0x40)  # Specify the INA219's address
+            ina = INA219(SHUNT_OHMS, address=INA219_ADDRESS)
             ina.configure()
             time.sleep(1)
             data = {
-                'BusVoltage': ina.voltage(),
-                'BusCurrent': None,
-                'Power': None,
-                'ShuntVoltage': ina.shunt_voltage(),
+                "BusVoltage": ina.voltage(),
+                "BusCurrent": None,
+                "Power": None,
+                "ShuntVoltage": ina.shunt_voltage(),
             }
-            data['BusCurrent'] = ina.current()
-            data['Power'] = ina.power()
+            data["BusCurrent"] = ina.current()
+            data["Power"] = ina.power()
         except DeviceRangeError as e:
-            data['error'] = str(e)
+            data["error"] = str(e)
     else:
-        data['error'] = "INA219 not found at address 0x40"
-    
+        data["error"] = f"INA219 not found at address {hex(INA219_ADDRESS)}"
+
     return data
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     """
-    If the module is executed as a standalone script, it will return the temperature in a telegraf friendly format. 
+    If the module is executed as a standalone script, it will return the temperature in a telegraf friendly format.
     """
     try:
         sensor_data = fetch_ina219_data()

@@ -20,6 +20,75 @@ Work in progress. We should be picking up some steam here to give the DYI commun
 
 ![image](https://github.com/user-attachments/assets/403248f5-b7d4-4cb1-921a-0458f515f387)
 
+## What's new (v2 overhaul)
+
+A broad overhaul closing out the open milestones:
+
+- **Built-in web UI** — a self-contained control page served by the firmware at
+  `http://gardyn.local:5000/` (controls, live sensors + pump power, cameras, grow
+  cycle, full schedule editor, run-pump-for-N-seconds). Auto-starts as a service;
+  no separate app required. See [`docs/access.md`](docs/access.md).
+- **Headless-friendly** — `setup.sh` keeps **SSH on** and sets up mDNS so the unit
+  is reachable at `gardyn.local` right after flashing.
+
+> Installing on a Pi? Follow [`docs/INSTALL.md`](docs/INSTALL.md) — a step-by-step,
+> brick-safe handoff (dry-run, backups, uninstall). Note the code is on the
+> **`v2-overhaul`** branch.
+- **Self-sufficient REST API** — camera, scheduling, grow-cycle, and system/model
+  endpoints (see below), with optional API-key auth.
+- **Home Assistant** — the physical button is now an HA `event` entity
+  (single/double/long); example dashboard in
+  [`docs/homeassistant/`](docs/homeassistant/lovelace-example.yaml).
+- **Grow-cycle reminders** — thinning, root-check, harvest, and nutrient
+  notifications via MQTT/REST.
+- **Resilience** — shared pigpio connection, sensor auto-reprobe, power-loss
+  state recovery, graceful shutdown.
+- **Ops** — Docker/compose, CI (lint + tests), automated changelog, hardened
+  setup with OS checks and camera udev rules.
+- **Config** — all pins/addresses/thresholds live in `config.py` / `.env`.
+
+See [`docs/design.md`](docs/design.md) for architecture, and
+[`docs/maintenance.md`](docs/maintenance.md) for upkeep.
+
+### REST API endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/light/on` `/light/off` | toggle grow light |
+| POST/GET | `/light/brightness` | set/get brightness (0–100) |
+| POST | `/pump/on` `/pump/off` | toggle pump |
+| POST/GET | `/pump/speed` | set/get pump speed |
+| GET | `/pump/stats` | INA219 power data |
+| GET | `/distance` `/distance/measure` | water-level distance (cm) |
+| GET | `/temperature` `/humidity` `/pcb-temp` | environment sensors |
+| GET | `/camera/upper` `/camera/lower` | capture a still (JPEG) |
+| GET/POST | `/schedule` | lights/pump cron schedule |
+| GET | `/grow` · POST `/grow/start` `/grow/stage` `/grow/acknowledge` | grow-cycle |
+| GET | `/system` | identity, version, detected model/profile |
+
+### Run with Docker
+
+```bash
+cp .env-dist .env          # edit MQTT + identity
+sudo pigpiod -p 8888       # pigpiod on the Pi host
+docker compose up -d       # api (:5000) + mqtt + optional broker
+```
+
+See [`docs/integrations/`](docs/integrations/README.md) for Telegraf, ThingsBoard,
+and Alexa.
+
+### Test it without a Pi
+
+A simulator runs the whole stack with fake hardware so you can try the web UI,
+REST API, and Home Assistant discovery on your laptop:
+
+```bash
+python -m venv .venv-dev && .venv-dev/bin/pip install -r requirements-dev.txt
+.venv-dev/bin/python -m simulator.serve     # http://localhost:5000/
+.venv-dev/bin/python -m simulator.mqtt_sim  # MQTT for Home Assistant (needs a broker)
+```
+
+See [`docs/simulator.md`](docs/simulator.md).
 
 ## Table of Contents
 

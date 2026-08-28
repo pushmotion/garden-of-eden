@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-import logging
-from flask import jsonify, request
 from app import create_app
-from flask_cors import CORS
+from app.lib.logging_config import configure_logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                        format='%(levelname)s - %(message)s',
-                        datefmt='%Y-%m-%d %H:%M:%S')
-# logging.basicConfig(filename='test.log', level=logging.DEBUG)
+configure_logging(log_file="garden-api.log")
 
-#logger = logging.getLogger(__name__)
-
-app = create_app('default')
-CORS(app)
+app = create_app("default")
 
 if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5000)

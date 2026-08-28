@@ -1,31 +1,37 @@
 import argparse
+
+import pigpio
 from gpiozero import PWMLED
 from gpiozero.pins.pigpio import PiGPIOFactory
-import pigpio
-from time import sleep
+
+import config
+
 
 class GPIOController:
     def __init__(self, pin, pin_factory=None):
         self.pin = pin
         self.pin_factory = pin_factory
-        if self.pin_factory:
-            self.pi = pigpio.pi()
+        if config.PIGPIO_HOST:
+            self.pi = pigpio.pi(config.PIGPIO_HOST, config.PIGPIO_PORT)
         else:
             self.pi = pigpio.pi()
-        
+
         if not self.pi.connected:
-            raise RuntimeError("Failed to connect to pigpiod daemon. Ensure it's running and accessible.")
+            raise RuntimeError(
+                "Failed to connect to pigpiod daemon. Ensure it's running and accessible."
+            )
 
     def set_frequency(self, frequency):
         if self.pi:
             self.pi.set_PWM_frequency(self.pin, frequency)
         else:
             raise RuntimeError("pigpio.pi client is not initialized.")
-        
+
+
 class Pump:
-    def __init__(self, pin=24, frequency=50, pin_factory=None):
+    def __init__(self, pin=config.PUMP_PIN, frequency=config.PUMP_FREQUENCY, pin_factory=None):
         # pigpiod is running on port 8888
-        #Note: for docker: PiGPIOFactory(host='pigpiod', port=8888)
+        # Note: for docker: PiGPIOFactory(host='pigpiod', port=8888)
         self.pin = pin
         self.pin_factory = pin_factory if pin_factory else PiGPIOFactory()
         self.pump = PWMLED(self.pin, pin_factory=self.pin_factory)
@@ -36,14 +42,14 @@ class Pump:
         """
         Turn pump on. Default to 30 percent duty.
         """
-        print(f"Turning pump on")
+        print("Turning pump on")
         self.pump.value = 1
 
     def off(self):
         """
         Turn pump off.
         """
-        print(f"Turning pump off")
+        print("Turning pump off")
         self.pump.value = 0
 
     def set_speed(self, speed_percentage):
@@ -85,7 +91,7 @@ class Pump:
             self.pump.value = duty
         else:
             raise ValueError("Speed must be between 0 and 1")
-    
+
     def get_duty_cycle(self):
         """
         Get the current duty cycle percentage.
@@ -99,24 +105,29 @@ class Pump:
 
     def close(self):
         self.pump.close()
-        self.gpio.stop()
+        if getattr(self.gpio, "pi", None):
+            self.gpio.pi.stop()
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Control a pump.')
-    parser.add_argument('--on', action='store_true', help='Turn the pump on.')
-    parser.add_argument('--off', action='store_true', help='Turn the pump off.')
-    parser.add_argument('--speed', type=int, default=None, help='Set the pump speed (0-100).')
-    parser.add_argument('--factory-host', type=str, default=None, help='GPIO factory host for remote access.')
-    parser.add_argument('--factory-port', type=int, default=None, help='GPIO factory port for remote access.')
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Control a pump.")
+    parser.add_argument("--on", action="store_true", help="Turn the pump on.")
+    parser.add_argument("--off", action="store_true", help="Turn the pump off.")
+    parser.add_argument("--speed", type=int, default=None, help="Set the pump speed (0-100).")
+    parser.add_argument(
+        "--factory-host", type=str, default=None, help="GPIO factory host for remote access."
+    )
+    parser.add_argument(
+        "--factory-port", type=int, default=None, help="GPIO factory port for remote access."
+    )
 
     args = parser.parse_args()
 
     pin_factory = None
     if args.factory_host and args.factory_port:
-        pin_factory = {'host': args.factory_host, 'port': args.factory_port}
+        pin_factory = PiGPIOFactory(host=args.factory_host, port=args.factory_port)
 
-    pump = Pump(24, pin_factory=pin_factory)  # Default frequency of 50Hz
+    pump = Pump(pin_factory=pin_factory)  # pins/frequency from config
 
     if args.on:
         pump.on()
