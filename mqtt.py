@@ -33,6 +33,8 @@ from config import (
     BROKER,
     BUTTON_PIN,
     CAMERA_RESOLUTION,
+    DEFAULT_BRIGHTNESS,
+    DEFAULT_PUMP_SPEED,
     IDENTIFIER,
     IMAGE_INTERVAL_SECONDS,
     KEEP_ALIVE_INTERVAL,
@@ -87,9 +89,11 @@ pump = pump_control
 light = light_control
 distance_sensor = distance_control
 
-# default on brightness
-brightness = 50
-speed = 100
+# Default duty applied when something is switched on without an explicit level.
+# Sourced from config so DEFAULT_BRIGHTNESS/DEFAULT_PUMP_SPEED in .env take effect
+# here as well as in the persisted-state defaults.
+brightness = DEFAULT_BRIGHTNESS
+speed = DEFAULT_PUMP_SPEED
 sec_per_min = 60
 min_per_hr = 60
 
@@ -1021,7 +1025,7 @@ def on_message(client, userdata, msg):
                     return
                 if speed <= 0:
                     # A previous slider move to 0 must not leave the button inert.
-                    speed = 100
+                    speed = DEFAULT_PUMP_SPEED
                 pump.set_speed(speed)
                 _arm_pump_safety()
                 commit_pump_state(client)
