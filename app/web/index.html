@@ -523,23 +523,39 @@
       } catch { $("meta").textContent = "offline"; conn(false); }
     }
 
+    // <img src> and <video src> are browser-issued requests that cannot carry the
+    // X-API-Key header, so they 401 whenever GARDEN_API_KEY is set. Fetch the bytes
+    // ourselves and hand the element a blob URL instead. Old URLs are revoked so the
+    // live-refresh loop does not leak one blob per frame.
+    async function loadMedia(id, path, ms) {
+      const el = $(id);
+      try {
+        const r = await fetchT(path + "?t=" + Date.now(), { headers: headers() }, ms || 20000);
+        if (r.status === 401) { needKey(); return false; }
+        if (!r.ok) return false;
+        const url = URL.createObjectURL(await r.blob());
+        if (el.dataset.url) URL.revokeObjectURL(el.dataset.url);
+        el.dataset.url = url; el.src = url;
+        if (el.tagName === "VIDEO") el.load();
+        return true;
+      } catch { return false; }
+    }
     function loadCams() {
-      $("cam-upper").src = "/camera/upper?t=" + Date.now();
-      $("cam-lower").src = "/camera/lower?t=" + Date.now();
+      loadMedia("cam-upper", "/camera/upper");
+      loadMedia("cam-lower", "/camera/lower");
     }
     function toggleCamAuto() {
       if ($("cam-auto").checked) { loadCams(); camTimer = setInterval(loadCams, camInterval); }
       else { clearInterval(camTimer); camTimer = null; }
     }
     function loadTimelapses() {
-      ["upper", "lower"].forEach(c => { $("tl-" + c).src = "/camera/timelapse/" + c + "?t=" + Date.now(); });
+      ["upper", "lower"].forEach(c => loadMedia("tl-" + c, "/camera/timelapse/" + c, 60000));
     }
     async function makeTimelapse(cam) {
-      toast("Building " + cam + " timelapse… (can take a minute)");
+      toast("Building " + cam + " timelapse (can take a minute)");
       const r = await post("/camera/timelapse/" + cam);
-      if (r && !r.error) { const v = $("tl-" + cam); v.src = "/camera/timelapse/" + cam + "?t=" + Date.now(); v.load(); }
+      if (r && !r.error) await loadMedia("tl-" + cam, "/camera/timelapse/" + cam, 60000);
     }
-
     // A range input with no value attribute parks at its midpoint, so the UI used
     // to claim 50% while the hardware was off. Seed both the slider and its label
     // from the real value.
