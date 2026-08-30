@@ -193,10 +193,14 @@ automation trigger.
 
 ## Open items
 
-- [ ] **`state_lib.save_state()` is never called from the MQTT handlers** — only
-      from the physical-button paths. Light/pump changes made from Home Assistant
-      are not persisted, so `restore_actuator_state()` restores stale values after
-      a power cut. Upstream bug; power-loss recovery is effectively half-wired.
+- [x] ~~**`state_lib.save_state()` is never called from the MQTT handlers**~~ —
+      fixed. The MQTT command paths now go through `commit_light_state()` /
+      `commit_pump_state()`, which publish the real duty cycle, sync the toggle
+      flag the physical button switches against, and persist for power-loss
+      recovery. `publish_*_state()` stays read-only for `on_connect` and Refresh
+      All. This also fixed a second symptom: because the MQTT handlers never
+      updated `light_state`/`pump_state`, turning the light on from HA left the
+      next button press turning it *on again* rather than off.
 - [ ] **`TANK_CAPACITY_GALLONS=5` is unverified** — upstream's default, not
       measured for this tower. Only affects the Water Gallons entity; depth and
       percentage are unaffected.
