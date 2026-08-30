@@ -171,6 +171,13 @@
     /* Per-pod plant tracking */
     .pods { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
     @media (max-width:640px){ .pods { grid-template-columns:1fr 1fr; } }
+    .tlnote { font-size:.62rem; line-height:1.4; padding:4px 2px 0; }
+    .towers { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; align-items:start; }
+    @media (max-width:640px){ .towers { grid-template-columns:1fr; } }
+    .tower { display:flex; flex-direction:column; gap:6px; }
+    .thead { font-size:.62rem; font-weight:700; letter-spacing:.06em; color:var(--green); text-transform:uppercase;
+      text-align:center; padding:6px 4px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); }
+    .pod.empty { opacity:.5; border-style:dashed; }
     .pod { border:1px solid var(--line); background:var(--surface-2); border-radius:10px; padding:8px; }
     .pod .pn { font-size:.6rem; color:var(--faint); font-weight:700; letter-spacing:.05em; }
     .pod input { width:100%; margin:4px 0; font-size:.8rem; padding:4px 6px; border-radius:7px; }
@@ -232,6 +239,11 @@
 
     <div id="alerts"></div>
 
+    <div id="keyalert" class="alert-banner" style="display:none">
+      <span>API key required - this Pi sets <code>GARDEN_API_KEY</code>. Enter it in Settings to load data.</span>
+      <button class="btn" onclick="needKey()">Enter key</button>
+    </div>
+
     <div class="card" id="settings">
       <h2>Settings</h2>
       <div class="row">
@@ -247,6 +259,11 @@
           <option value="dark">Dark</option>
           <option value="light">Light</option>
         </select>
+        <label>Units</label>
+        <select id="set-units" onchange="setUnits(this.value)">
+          <option value="c">Celsius</option>
+          <option value="f">Fahrenheit</option>
+        </select>
         <label>Live refresh</label>
         <select id="set-caminterval" onchange="setCamInterval(+this.value)">
           <option value="6000">6 s</option>
@@ -259,9 +276,9 @@
     <div class="card">
       <h2>Sensors <button class="ghost" onclick="refresh()">Refresh</button></h2>
       <div class="tiles">
-        <div class="tile"><div class="top">Air Temp</div><div class="val"><span id="s-temp">—</span><small>°C</small></div></div>
+        <div class="tile"><div class="top">Air Temp</div><div class="val"><span id="s-temp">—</span><small class="unit-temp">°C</small></div></div>
         <div class="tile"><div class="top">Humidity</div><div class="val"><span id="s-hum">—</span><small>%</small></div></div>
-        <div class="tile"><div class="top">PCB Temp</div><div class="val"><span id="s-pcb">—</span><small>°C</small></div></div>
+        <div class="tile"><div class="top">PCB Temp</div><div class="val"><span id="s-pcb">—</span><small class="unit-temp">°C</small></div></div>
         <div class="tile" id="s-water-card"><div class="top">Water <span class="statuschip" id="s-water-status"></span></div><div class="val"><span id="s-water-gal">—</span><small>gal</small></div><div class="muted" style="font-size:.68rem"><span id="s-water">—</span> cm</div><div class="bar"><i id="s-water-bar" style="width:0"></i></div></div>
       </div>
       <div class="tiles" style="margin-top:12px">
@@ -293,9 +310,9 @@
       </div>
       <div class="row">
         <label>Brightness</label>
-        <input type="range" min="0" max="100" id="brightness" oninput="lbl('brightness')"
+        <input type="range" min="0" max="100" value="0" id="brightness" oninput="lbl('brightness')"
                onchange="post('/light/brightness', {value:+this.value}); setActive('light', +this.value>0)">
-        <span class="pct" id="brightness-val">50%</span>
+        <span class="pct" id="brightness-val">0%</span>
       </div>
     </div>
 
@@ -307,9 +324,9 @@
       </div>
       <div class="row">
         <label>Speed</label>
-        <input type="range" min="0" max="100" id="speed" oninput="lbl('speed')"
+        <input type="range" min="0" max="100" value="0" id="speed" oninput="lbl('speed')"
                onchange="post('/pump/speed', {value:+this.value}); setActive('pump', +this.value>0)">
-        <span class="pct" id="speed-val">100%</span>
+        <span class="pct" id="speed-val">0%</span>
       </div>
       <div class="row">
         <label>Run for</label>
@@ -326,8 +343,8 @@
         </span>
       </h2>
       <div class="cams">
-        <figure class="cam"><img id="cam-upper" alt="upper camera"><figcaption>Upper</figcaption></figure>
-        <figure class="cam"><img id="cam-lower" alt="lower camera"><figcaption>Lower</figcaption></figure>
+        <figure class="cam"><img id="cam-upper" alt="upper camera"><figcaption id="cap-upper">Upper</figcaption></figure>
+        <figure class="cam"><img id="cam-lower" alt="lower camera"><figcaption id="cap-lower">Lower</figcaption></figure>
       </div>
       <h2 style="margin-top:18px">Timelapse
         <span style="display:flex; gap:8px">
@@ -336,8 +353,8 @@
         </span>
       </h2>
       <div class="cams">
-        <figure class="cam"><video id="tl-upper" controls preload="none" playsinline muted loop></video><figcaption>Upper timelapse</figcaption></figure>
-        <figure class="cam"><video id="tl-lower" controls preload="none" playsinline muted loop></video><figcaption>Lower timelapse</figcaption></figure>
+        <figure class="cam"><video id="tl-upper" controls preload="none" playsinline muted loop></video><figcaption>Upper timelapse</figcaption><div class="tlnote muted" id="tl-note-upper"></div></figure>
+        <figure class="cam"><video id="tl-lower" controls preload="none" playsinline muted loop></video><figcaption>Lower timelapse</figcaption><div class="tlnote muted" id="tl-note-lower"></div></figure>
       </div>
     </div>
 
@@ -358,7 +375,7 @@
     <div class="card">
       <h2>Plants <button class="ghost" onclick="savePods()">Save plants</button></h2>
       <p class="muted" style="margin:-4px 0 12px">Name each pod and tap the shapes to match the code printed on the physical pod.</p>
-      <div class="pods" id="pods"></div>
+      <div class="towers" id="pods"></div>
     </div>
 
     <div class="card">
@@ -411,6 +428,7 @@
     let API_KEY = localStorage.getItem("garden_key") || "";
     let camTimer = null;
     let camInterval = +localStorage.getItem("camInterval") || 6000;
+    let units = localStorage.getItem("units") || "c";  // "c" or "f", remembered per browser
     let waterLowCm = null;  // tank-low threshold (cm) from /system; null = disabled
     const SCH_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
     const emptyDays = () => Object.fromEntries(SCH_DAYS.map(d => [d, []]));
@@ -421,6 +439,19 @@
     function toast(msg, err) { const t = $("toast"); t.textContent = msg; t.className = "show" + (err ? " err" : ""); setTimeout(() => t.className = "", 1600); }
     function conn(ok) { $("conn").className = "dot " + (ok ? "ok" : "bad"); }
 
+    // A 401 means the firmware has GARDEN_API_KEY set but this browser has no key
+    // (or a stale one). Surface it instead of leaving every tile blank - /health is
+    // exempt from auth, so the connection dot stays green and hides the real cause.
+    let keyPrompted = false;
+    function needKey() {
+      $("keyalert").style.display = "flex";
+      if (keyPrompted) return;
+      keyPrompted = true;
+      $("settings").classList.add("open");
+      $("api-key").value = API_KEY;
+      $("api-key").focus();
+    }
+
     // fetch with a timeout so a hung/unreachable Pi never freezes the UI.
     async function fetchT(path, opts, ms) {
       const ctrl = new AbortController();
@@ -430,6 +461,7 @@
     }
     async function get(path) {
       const r = await fetchT(path, { headers: headers() });
+      if (r.status === 401) { needKey(); throw new Error(401); }
       if (!r.ok) throw new Error(r.status);
       conn(true); return r.json();
     }
@@ -437,6 +469,7 @@
       try {
         const r = await fetchT(path, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(body || {}) });
         let d = {}; try { d = await r.json(); } catch {}
+        if (r.status === 401) needKey();
         conn(r.ok); toast(d.message || d.error || (r.ok ? "ok" : "error " + r.status), !r.ok); return d;
       } catch (e) { conn(false); toast(e.name === "AbortError" ? "request timed out" : "error: " + e.message, true); }
     }
@@ -447,6 +480,10 @@
     }
 
     function lbl(id) { $(id + "-val").textContent = $(id).value + "%"; }
+    // Sensors always report Celsius; the F conversion is presentation-only.
+    function fmtTemp(c) { const v = +c; if (!isFinite(v)) return "n/a"; return (units === "f" ? v * 9 / 5 + 32 : v).toFixed(1); }
+    function applyUnitLabels() { document.querySelectorAll(".unit-temp").forEach(e => { e.textContent = units === "f" ? "\u00b0F" : "\u00b0C"; }); }
+    function setUnits(u) { units = u; localStorage.setItem("units", u); applyUnitLabels(); refresh(); }
     function setActive(device, isOn) {
       $(device + "-on").classList.toggle("active", isOn);
       const off = $(device + "-off"); off.classList.toggle("active", !isOn); off.classList.toggle("danger", !isOn);
@@ -458,12 +495,13 @@
 
     async function refresh() {
       const sensors = {
-        "/temperature": ["s-temp", "temperature"],
-        "/humidity": ["s-hum", "humidity"],
-        "/pcb-temp": ["s-pcb", "pcb-temp"],
+        "/temperature": ["s-temp", "temperature", true],
+        "/humidity": ["s-hum", "humidity", false],
+        "/pcb-temp": ["s-pcb", "pcb-temp", true],
       };
-      for (const [path, [id, key]] of Object.entries(sensors)) {
-        try { $(id).textContent = (await get(path))[key]; } catch { $(id).textContent = "n/a"; }
+      for (const [path, [id, key, isTemp]] of Object.entries(sensors)) {
+        try { const v = (await get(path))[key]; $(id).textContent = isTemp ? fmtTemp(v) : v; }
+        catch { $(id).textContent = "n/a"; }
       }
       try {
         const w = await get("/distance"); const cm = w.distance;
@@ -503,31 +541,87 @@
       } catch { $("meta").textContent = "offline"; conn(false); }
     }
 
-    function loadCams() {
-      $("cam-upper").src = "/camera/upper?t=" + Date.now();
-      $("cam-lower").src = "/camera/lower?t=" + Date.now();
+    // <img src> and <video src> are browser-issued requests that cannot carry the
+    // X-API-Key header, so they 401 whenever GARDEN_API_KEY is set. Fetch the bytes
+    // ourselves and hand the element a blob URL instead. Old URLs are revoked so the
+    // live-refresh loop does not leak one blob per frame.
+    async function loadMedia(id, path, ms) {
+      const el = $(id);
+      try {
+        const r = await fetchT(path + "?t=" + Date.now(), { headers: headers() }, ms || 30000);
+        if (r.status === 401) { needKey(); return false; }
+        if (!r.ok) return false;
+        const url = URL.createObjectURL(await r.blob());
+        if (el.dataset.url) URL.revokeObjectURL(el.dataset.url);
+        el.dataset.url = url; el.src = url;
+        if (el.tagName === "VIDEO") el.load();
+        return true;
+      } catch { return false; }
+    }
+    // Two USB captures at once contend on the Pi's bus (measured 17-20s each in
+    // parallel vs 2.5-3s sequentially), so take them one at a time and skip a tick
+    // rather than stacking passes when the interval is shorter than a full cycle.
+    // Consecutive frames of a stationary tower look identical, so without a
+    // timestamp there is no way to tell a refresh landed.
+    function stampCam(which, ok) {
+      const el = $("cap-" + which);
+      const name = which === "upper" ? "Upper" : "Lower";
+      el.textContent = name + " \u00b7 " + (ok ? new Date().toLocaleTimeString() : "capture failed");
+      el.style.color = ok ? "" : "var(--red)";
+    }
+    let camBusy = false;
+    async function loadCams() {
+      if (camBusy) return;
+      camBusy = true;
+      try {
+        stampCam("upper", await loadMedia("cam-upper", "/camera/upper", 30000));
+        stampCam("lower", await loadMedia("cam-lower", "/camera/lower", 30000));
+      } finally { camBusy = false; }
     }
     function toggleCamAuto() {
       if ($("cam-auto").checked) { loadCams(); camTimer = setInterval(loadCams, camInterval); }
       else { clearInterval(camTimer); camTimer = null; }
     }
-    function loadTimelapses() {
-      ["upper", "lower"].forEach(c => { $("tl-" + c).src = "/camera/timelapse/" + c + "?t=" + Date.now(); });
+    // A build works at any frame count, but an archive only hours old makes a
+    // clip barely a second long, so say how much history exists rather than
+    // leaving an empty player with no explanation.
+    async function loadTimelapses() {
+      for (const c of ["upper", "lower"]) {
+        const note = $("tl-note-" + c);
+        let st = null;
+        try { st = await get("/camera/timelapse/" + c + "/status"); } catch { }
+        if (!st) { note.textContent = ""; continue; }
+        if (st.has_video) await loadMedia("tl-" + c, "/camera/timelapse/" + c, 60000);
+        if (!st.frames) {
+          note.textContent = "No frames archived yet - one is captured automatically every "
+            + Math.round(st.interval_seconds / 60) + " min.";
+          continue;
+        }
+        const since = st.first ? new Date(st.first).toLocaleDateString() : "?";
+        const days = Math.max(1, Math.round(st.min_frames * st.interval_seconds / 86400));
+        note.textContent = st.frames + " frames since " + since + " - builds a ~" + st.seconds + "s clip"
+          + (st.ready ? "." : ". Recommended from " + st.min_frames + " frames (~" + days + " days).")
+          + (st.has_video ? "" : " No clip built yet.");
+      }
     }
     async function makeTimelapse(cam) {
-      toast("Building " + cam + " timelapse… (can take a minute)");
+      toast("Building " + cam + " timelapse (can take a minute)");
       const r = await post("/camera/timelapse/" + cam);
-      if (r && !r.error) { const v = $("tl-" + cam); v.src = "/camera/timelapse/" + cam + "?t=" + Date.now(); v.load(); }
+      if (r && !r.error) await loadTimelapses();
     }
-
+    // A range input with no value attribute parks at its midpoint, so the UI used
+    // to claim 50% while the hardware was off. Seed both the slider and its label
+    // from the real value.
+    function setSlider(id, v) { $(id).value = Math.round(+v || 0); lbl(id); }
     async function syncToggles() {
-      try { setActive("light", ((await get("/light/brightness")).value || 0) > 0); } catch {}
-      try { setActive("pump", ((await get("/pump/speed")).value || 0) > 0); } catch {}
+      try { setSlider("brightness", (await get("/light/brightness")).value); setActive("light", +$("brightness").value > 0); } catch {}
+      try { setSlider("speed", (await get("/pump/speed")).value); setActive("pump", +$("speed").value > 0); } catch {}
     }
 
     async function loadGrow() {
       try {
         const g = await get("/grow");
+        nutrientDose = g.nutrient_dose || "full";
         renderAlerts(g.due || []);
         $("grow-stage").value = g.stage;
         if (g.started) { const d = Math.floor((Date.now() - new Date(g.started)) / 86400000); $("grow-days").textContent = `day ${d}`; }
@@ -613,12 +707,22 @@
       root_check: "Check the roots",
       harvest: "Ready to harvest / trim",
       nutrient: "Add plant food (nutrients)",
+      reservoir_change: "Swap out about half the reservoir",
     };
+    // The first feed of a cycle is full strength; later ones land on top of what
+    // the last one left behind, so the banner has to say which is meant.
+    let nutrientDose = "full";
+    function reminderLabel(key) {
+      if (key !== "nutrient") return REMINDER_LABELS[key] || key;
+      return nutrientDose === "reduced"
+        ? "Add plant food - reduced dose (about half to two-thirds)"
+        : "Add plant food - full dose (first feed of this cycle)";
+    }
     function renderAlerts(due) {
       const box = $("alerts"); box.innerHTML = "";
       (due || []).forEach(key => {
         const div = document.createElement("div"); div.className = "alert-banner";
-        const span = document.createElement("span"); span.textContent = REMINDER_LABELS[key] || key;
+        const span = document.createElement("span"); span.textContent = reminderLabel(key);
         const btn = document.createElement("button"); btn.className = "btn"; btn.textContent = "Done";
         btn.onclick = () => post("/grow/acknowledge", { key }).then(loadGrow);
         div.append(span, btn); box.appendChild(div);
@@ -650,38 +754,57 @@
       const p = plantCatalog.find(x => x.name === name);
       return p ? `${p.guide} · ${p.light_need} light · ~${p.days_to_harvest}d · ${p.difficulty}` : "";
     };
+    // Laid out as the physical tower: three columns (A left, B centre, C right),
+    // each site 1 (top) to 10 (bottom). Pod ids map 1-10=A, 11-20=B, 21-30=C.
+    const TOWERS = [["A", "left"], ["B", "centre"], ["C", "right"]];
+    const siteOf = id => TOWERS[Math.floor((id - 1) / 10)][0] + (((id - 1) % 10) + 1);
+    function podCell(i, opts) {
+      const p = pods[i];
+      if (!p.symbols) p.symbols = [];
+      const cell = document.createElement("div"); cell.className = "pod" + (p.name ? "" : " empty");
+      const pn = document.createElement("div"); pn.className = "pn";
+      pn.textContent = siteOf(p.id); pn.title = "pod " + p.id;
+      const isCustom = p.name && !plantCatalog.some(x => x.name === p.name);
+      const sel = document.createElement("select"); sel.innerHTML = opts;
+      sel.value = isCustom ? "__other__" : (p.name || "");
+      const custom = document.createElement("input"); custom.placeholder = "custom name"; custom.value = isCustom ? p.name : "";
+      custom.style.display = isCustom ? "" : "none";
+      const guide = document.createElement("div"); guide.className = "pguide muted"; guide.textContent = guideFor(p.name);
+      const mark = () => cell.classList.toggle("empty", !pods[i].name);
+      sel.onchange = () => {
+        if (sel.value === "__other__") { custom.style.display = ""; pods[i].name = custom.value; }
+        else { custom.style.display = "none"; custom.value = ""; pods[i].name = sel.value; }
+        guide.textContent = guideFor(pods[i].name); mark();
+      };
+      custom.onchange = () => { pods[i].name = custom.value; mark(); };
+      const shapes = document.createElement("div"); shapes.className = "shapes";
+      podShapes.forEach(sh => {
+        const b = document.createElement("button"); b.textContent = SHAPE_GLYPH[sh] || "?"; b.title = sh;
+        if (p.symbols.includes(sh)) b.classList.add("on");
+        b.onclick = () => {
+          const arr = pods[i].symbols;
+          const at = arr.indexOf(sh);
+          if (at >= 0) arr.splice(at, 1); else if (arr.length < 5) arr.push(sh);
+          b.classList.toggle("on", arr.includes(sh));
+        };
+        shapes.appendChild(b);
+      });
+      cell.append(pn, sel, custom, guide, shapes);
+      return cell;
+    }
     function renderPods() {
       const box = $("pods"); box.innerHTML = "";
       const opts = catalogOptionsHTML();
-      pods.forEach((p, i) => {
-        if (!p.symbols) p.symbols = [];
-        const cell = document.createElement("div"); cell.className = "pod";
-        const pn = document.createElement("div"); pn.className = "pn"; pn.textContent = "POD " + p.id;
-        const isCustom = p.name && !plantCatalog.some(x => x.name === p.name);
-        const sel = document.createElement("select"); sel.innerHTML = opts;
-        sel.value = isCustom ? "__other__" : (p.name || "");
-        const custom = document.createElement("input"); custom.placeholder = "custom name"; custom.value = isCustom ? p.name : "";
-        custom.style.display = isCustom ? "" : "none";
-        const guide = document.createElement("div"); guide.className = "pguide muted"; guide.textContent = guideFor(p.name);
-        sel.onchange = () => {
-          if (sel.value === "__other__") { custom.style.display = ""; pods[i].name = custom.value; }
-          else { custom.style.display = "none"; custom.value = ""; pods[i].name = sel.value; }
-          guide.textContent = guideFor(pods[i].name);
-        };
-        custom.onchange = () => { pods[i].name = custom.value; };
-        const shapes = document.createElement("div"); shapes.className = "shapes";
-        podShapes.forEach(s => {
-          const b = document.createElement("button"); b.textContent = SHAPE_GLYPH[s] || "?"; b.title = s;
-          if (p.symbols.includes(s)) b.classList.add("on");
-          b.onclick = () => {
-            const arr = pods[i].symbols;
-            const at = arr.indexOf(s);
-            if (at >= 0) arr.splice(at, 1); else if (arr.length < 5) arr.push(s);
-            b.classList.toggle("on", arr.includes(s));
-          };
-          shapes.appendChild(b);
-        });
-        cell.append(pn, sel, custom, guide, shapes); box.appendChild(cell);
+      TOWERS.forEach((t, ti) => {
+        const col = document.createElement("div"); col.className = "tower";
+        const head = document.createElement("div"); head.className = "thead";
+        head.textContent = "Tower " + t[0] + " \u00b7 " + t[1];
+        col.appendChild(head);
+        for (let k = 0; k < 10; k++) {
+          const i = ti * 10 + k;
+          if (pods[i]) col.appendChild(podCell(i, opts));
+        }
+        box.appendChild(col);
       });
     }
     function savePods() { post("/pods", pods); }
@@ -779,12 +902,13 @@
       });
     }
     function toggleSettings() { $("settings").classList.toggle("open"); $("api-key").value = API_KEY; }
-    function saveKey() { API_KEY = $("api-key").value.trim(); localStorage.setItem("garden_key", API_KEY); toast("key saved"); loadSystem(); refresh(); }
+    function saveKey() { API_KEY = $("api-key").value.trim(); localStorage.setItem("garden_key", API_KEY); $("keyalert").style.display = "none"; keyPrompted = false; toast("key saved"); loadSystem(); refresh(); syncToggles(); }
 
     setupCollapsible();
     $("theme-btn").textContent = document.documentElement.dataset.theme === "dark" ? "🌙" : "☀️";
     $("set-theme").value = localStorage.getItem("theme") || "dark";
     $("set-caminterval").value = camInterval;
+    $("set-units").value = units; applyUnitLabels();
     loadSystem(); refresh(); loadGrow(); loadSchedule(); loadPods(); loadCams(); loadTimelapses(); syncToggles(); ping();
     setInterval(refresh, 30000);
     setInterval(ping, 10000);

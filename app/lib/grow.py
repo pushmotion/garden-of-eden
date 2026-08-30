@@ -17,10 +17,28 @@ from app.lib.persist import write_json_atomic
 
 STAGES = ["germination", "thinning", "root_check", "harvest"]
 
+# Reminders that come back round after round, keyed to the config cadence that
+# drives them. Unlike the one-shots these are anchored to the last acknowledgement
+# rather than to the cycle start, so acting late shifts the next one instead of
+# silently skipping a whole cadence.
+RECURRING = ("nutrient", "reservoir_change")
+
+
+def _cadence(key):
+    return {
+        "nutrient": config.NUTRIENT_REMINDER_DAYS,
+        "reservoir_change": config.RESERVOIR_CHANGE_DAYS,
+    }.get(key)
+
 
 def default_state(now=None):
     now = now or datetime.now()
-    return {"stage": "germination", "started": now.isoformat(), "acknowledged": []}
+    return {
+        "stage": "germination",
+        "started": now.isoformat(),
+        "acknowledged": [],
+        "last_ack": {},
+    }
 
 
 def load_state():
@@ -70,9 +88,19 @@ def due_reminders(state, now=None):
         if threshold and days >= threshold and key not in acked:
             due.append(key)
 
-    cadence = config.NUTRIENT_REMINDER_DAYS
-    if cadence and days > 0 and days % cadence == 0 and f"nutrient_day{days}" not in acked:
-        due.append("nutrient")
+    # Recurring reminders are due once a full cadence has passed since they were
+    # last acknowledged (or since the cycle started, if never). The older
+    # ``days % cadence == 0`` test only held for a single day, so a reminder
+    # missed on its exact day vanished until the next multiple.
+    last_ack = state.get("last_ack") or {}
+    for key in RECURRING:
+        cadence = _cadence(key)
+        if not cadence:
+            continue
+        previous = last_ack.get(key)
+        since = _days_since(previous, now) if previous else days
+        if days >= cadence and since >= cadence:
+            due.append(key)
 
     return due
 
@@ -80,18 +108,30 @@ def due_reminders(state, now=None):
 def acknowledge(state, key, now=None):
     """Mark a reminder handled so it stops firing.
 
-    The recurring nutrient reminder is acked per-day so it can fire again next
-    cadence window.
+    Recurring reminders record *when* they were handled and restart their
+    cadence from that moment; one-shots are simply marked done.
     """
     now = now or datetime.now()
-    acked = set(state.get("acknowledged", []))
-    if key == "nutrient":
-        days = _days_since(state.get("started"), now)
-        acked.add(f"nutrient_day{days}")
+    if key in RECURRING:
+        last_ack = dict(state.get("last_ack") or {})
+        last_ack[key] = now.isoformat()
+        state["last_ack"] = last_ack
     else:
+        acked = set(state.get("acknowledged", []))
         acked.add(key)
-    state["acknowledged"] = sorted(acked)
+        state["acknowledged"] = sorted(acked)
     return state
+
+
+def nutrient_dose(state):
+    """Whether the next feed should be a full or a reduced dose.
+
+    The first feed of a cycle goes into what is effectively plain water, so it
+    is full strength. Later feeds land on top of whatever the previous one left
+    behind — plain-water top-offs dilute but do not clear it — so they are cut
+    back to avoid stacking salts in a reservoir nothing on the unit can measure.
+    """
+    return "reduced" if (state.get("last_ack") or {}).get("nutrient") else "full"
 
 
 def set_stage(state, stage):

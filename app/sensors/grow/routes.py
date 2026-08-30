@@ -8,7 +8,13 @@ grow_blueprint = Blueprint("grow", __name__)
 @grow_blueprint.route("", methods=["GET"])
 def get_grow():
     state = grow_lib.load_state()
-    return jsonify({**state, "due": grow_lib.due_reminders(state)})
+    return jsonify(
+        {
+            **state,
+            "due": grow_lib.due_reminders(state),
+            "nutrient_dose": grow_lib.nutrient_dose(state),
+        }
+    )
 
 
 @grow_blueprint.route("/start", methods=["POST"])

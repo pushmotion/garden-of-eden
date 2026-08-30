@@ -146,6 +146,12 @@ TIMELAPSE_DIR = os.getenv(
 )
 TIMELAPSE_MAX_FRAMES = _get_int("TIMELAPSE_MAX_FRAMES", 720)
 TIMELAPSE_FPS = _get_int("TIMELAPSE_FPS", 12)
+# A build works with any number of frames, but a short archive played at the full
+# frame rate flashes past. Frame rate is scaled down to stretch small archives to
+# roughly TIMELAPSE_TARGET_SECONDS; MIN_FRAMES is only the point at which the UI
+# stops warning that there is not much history yet (168 = 7 days of hourly frames).
+TIMELAPSE_MIN_FRAMES = _get_int("TIMELAPSE_MIN_FRAMES", 168)
+TIMELAPSE_TARGET_SECONDS = _get_int("TIMELAPSE_TARGET_SECONDS", 10)
 
 # ---------------------------------------------------------------------------
 # REST API auth (optional). When GARDEN_API_KEY is set, non-localhost
@@ -171,8 +177,12 @@ GROW_STATE_FILE = os.path.expanduser(os.getenv("GROW_STATE_FILE", "~/.garden_gro
 THINNING_REMINDER_DAYS = _get_int("THINNING_REMINDER_DAYS", 14)
 ROOT_CHECK_REMINDER_DAYS = _get_int("ROOT_CHECK_REMINDER_DAYS", 21)
 HARVEST_REMINDER_DAYS = _get_int("HARVEST_REMINDER_DAYS", 35)
-# Reminder cadence (days) for adding nutrients/"food"
-NUTRIENT_REMINDER_DAYS = _get_int("NUTRIENT_REMINDER_DAYS", 7)
+# Recurring reminder cadences (days), measured from the last acknowledgement.
+# Feeding every 7 days suits a system whose solution strength is measured; with
+# no EC/TDS sensor on the unit the safer default is a longer cadence plus a
+# periodic partial reservoir swap, which is what actually resets accumulation.
+NUTRIENT_REMINDER_DAYS = _get_int("NUTRIENT_REMINDER_DAYS", 14)
+RESERVOIR_CHANGE_DAYS = _get_int("RESERVOIR_CHANGE_DAYS", 49)
 
 # ---------------------------------------------------------------------------
 # External integrations (scaffolded; see app/integrations/ and docs/integrations/)
