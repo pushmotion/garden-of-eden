@@ -298,9 +298,9 @@
       </div>
       <div class="row">
         <label>Brightness</label>
-        <input type="range" min="0" max="100" id="brightness" oninput="lbl('brightness')"
+        <input type="range" min="0" max="100" value="0" id="brightness" oninput="lbl('brightness')"
                onchange="post('/light/brightness', {value:+this.value}); setActive('light', +this.value>0)">
-        <span class="pct" id="brightness-val">50%</span>
+        <span class="pct" id="brightness-val">0%</span>
       </div>
     </div>
 
@@ -312,9 +312,9 @@
       </div>
       <div class="row">
         <label>Speed</label>
-        <input type="range" min="0" max="100" id="speed" oninput="lbl('speed')"
+        <input type="range" min="0" max="100" value="0" id="speed" oninput="lbl('speed')"
                onchange="post('/pump/speed', {value:+this.value}); setActive('pump', +this.value>0)">
-        <span class="pct" id="speed-val">100%</span>
+        <span class="pct" id="speed-val">0%</span>
       </div>
       <div class="row">
         <label>Run for</label>
@@ -540,9 +540,13 @@
       if (r && !r.error) { const v = $("tl-" + cam); v.src = "/camera/timelapse/" + cam + "?t=" + Date.now(); v.load(); }
     }
 
+    // A range input with no value attribute parks at its midpoint, so the UI used
+    // to claim 50% while the hardware was off. Seed both the slider and its label
+    // from the real value.
+    function setSlider(id, v) { $(id).value = Math.round(+v || 0); lbl(id); }
     async function syncToggles() {
-      try { setActive("light", ((await get("/light/brightness")).value || 0) > 0); } catch {}
-      try { setActive("pump", ((await get("/pump/speed")).value || 0) > 0); } catch {}
+      try { setSlider("brightness", (await get("/light/brightness")).value); setActive("light", +$("brightness").value > 0); } catch {}
+      try { setSlider("speed", (await get("/pump/speed")).value); setActive("pump", +$("speed").value > 0); } catch {}
     }
 
     async function loadGrow() {
@@ -799,7 +803,7 @@
       });
     }
     function toggleSettings() { $("settings").classList.toggle("open"); $("api-key").value = API_KEY; }
-    function saveKey() { API_KEY = $("api-key").value.trim(); localStorage.setItem("garden_key", API_KEY); $("keyalert").style.display = "none"; keyPrompted = false; toast("key saved"); loadSystem(); refresh(); }
+    function saveKey() { API_KEY = $("api-key").value.trim(); localStorage.setItem("garden_key", API_KEY); $("keyalert").style.display = "none"; keyPrompted = false; toast("key saved"); loadSystem(); refresh(); syncToggles(); }
 
     setupCollapsible();
     $("theme-btn").textContent = document.documentElement.dataset.theme === "dark" ? "🌙" : "☀️";
