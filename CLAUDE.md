@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **This is the PushMotion fork, not upstream.** Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+> before changing `mqtt.py`, the water-sensor logic, or anything pump-related. It
+> covers why this fork diverges from `iot-root/garden-of-eden`, the tower's water
+> calibration and how to redo it, two ways to take a *wrong* sensor reading, where
+> tests may safely run (never on the Pi — the hardware stubs disengage there), and
+> the open items. The Pi tracks this fork's `feat/gardyn-tower-local`; pointing it
+> back at upstream `main` silently reintroduces three pump defects.
+
 ## What this is
 
 Firmware/control software for a **Gardyn** hydroponic system running on a Raspberry Pi (Zero 2 / Zero W) inside the unit. It talks to physical hardware over GPIO and I2C: lights (PWM), water pump, distance/water-level sensor, temperature & humidity, PCB temp, pump power monitor, USB cameras, and a momentary button.
