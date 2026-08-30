@@ -4,7 +4,7 @@ import signal
 import subprocess
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Timer
 
 # import picamera
@@ -18,7 +18,7 @@ from app.lib import grow as grow_lib
 from app.lib import state as state_lib
 from app.lib.hardware import detect_model, get_pin_factory
 from app.lib.logging_config import configure_logging
-from app.lib.water import is_water_low
+from app.lib.water import gallons_remaining, is_water_low
 from app.sensors.camera import camera as camera_mod
 from app.sensors.distance.distance import MeasurementError
 from app.sensors.distance.routes import distance_control
@@ -42,11 +42,14 @@ from config import (
     MODEL,
     PASSWORD,
     PORT,
+    TANK_CAPACITY_GALLONS,
     UPPER_CAMERA_DEVICE,
     UPPER_IMAGE_PATH,
     USERNAME,
     VERSION,
     WATER_CHECK_SECONDS,
+    WATER_EMPTY_CM,
+    WATER_FULL_CM,
     WATER_LOW_CM,
 )
 
@@ -317,6 +320,63 @@ def evaluate_water_low(client):
     return distance
 
 
+def publish_light_state(client):
+    """Report the light's real duty cycle. Read-only: never changes the output."""
+    level = light.get_brightness()
+    client.publish(BASE_TOPIC + "/light/state", "ON" if level > 0 else "OFF", retain=True)
+    client.publish(BASE_TOPIC + "/light/brightness/state", str(int(round(level))), retain=True)
+    logger.info("Light is %s at %.0f%%", "ON" if level > 0 else "OFF", level)
+
+
+def publish_pump_state(client):
+    """Report the pump's real duty cycle. Read-only: never changes the output."""
+    level = pump.get_speed()
+    client.publish(BASE_TOPIC + "/pump/state", "ON" if level > 0 else "OFF", retain=True)
+    client.publish(BASE_TOPIC + "/pump/speed/state", str(int(round(level))), retain=True)
+    logger.info("Pump is %s at %.0f%%", "ON" if level > 0 else "OFF", level)
+
+
+def publish_water_readings(client, distance):
+    """Publish the raw airgap plus the derived depth, fill percentage and gallons.
+
+    The sensor reports the gap down to the water surface, so that number grows as
+    the tank drains; depth is its complement measured up from the tank floor.
+    """
+    client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}")
+
+    span = WATER_EMPTY_CM - WATER_FULL_CM
+    if span <= 0:
+        return
+
+    depth = max(0.0, WATER_EMPTY_CM - distance)
+    client.publish(BASE_TOPIC + "/water/depth", f"{depth:.2f}")
+
+    percent = max(0.0, min(100.0, depth / span * 100.0))
+    client.publish(BASE_TOPIC + "/water/percent", f"{percent:.0f}")
+
+    gallons = gallons_remaining(distance, WATER_FULL_CM, WATER_EMPTY_CM, TANK_CAPACITY_GALLONS)
+    if gallons is not None:
+        client.publish(BASE_TOPIC + "/water/gallons", f"{gallons:.1f}")
+
+
+def water_ok_for_pump(client):
+    """Return True when there is enough water to run the pump.
+
+    Shared by the power button and the speed slider so both paths enforce the
+    same dry-run protection. Fails *open* when the distance read itself fails,
+    matching ``is_water_low``, so a dead sensor cannot brick the pump.
+    """
+    distance = safe_distance_measure()
+    if not is_water_low(distance, WATER_LOW_CM):
+        client.publish(BASE_TOPIC + "/water/low/state", "OFF", retain=True)
+        return True
+
+    logger.warning("Water too low (%.2fcm > %.2fcm), aborting pump", distance, WATER_LOW_CM)
+    flash_lights()
+    client.publish(BASE_TOPIC + "/water/low/state", "ON", retain=True)
+    return False
+
+
 def publish_water_low_mode(client):
     if WATER_LOW_CM not in (None, 0):
         mode = "Enabled"
@@ -448,6 +508,78 @@ def send_discovery_messages(client):
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
 
+    # Config for Water Depth (complement of the raw airgap; rises as you fill)
+    TEMP_CONFIG_TOPIC = "homeassistant/sensor/gardyn/" + IDENTIFIER + "_water_depth/config"
+    temp_config_payload = {
+        "name": "Water Depth",
+        "unique_id": IDENTIFIER + "_water_depth",
+        "state_topic": BASE_TOPIC + "/water/depth",
+        "unit_of_measurement": "cm",
+        "device_class": "distance",
+        "icon": "mdi:cup-water",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # Config for Water Remaining (percentage of usable capacity)
+    TEMP_CONFIG_TOPIC = "homeassistant/sensor/gardyn/" + IDENTIFIER + "_water_percent/config"
+    temp_config_payload = {
+        "name": "Water Remaining",
+        "unique_id": IDENTIFIER + "_water_percent",
+        "state_topic": BASE_TOPIC + "/water/percent",
+        "unit_of_measurement": "%",
+        "icon": "mdi:water-percent",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # Config for Water Gallons (uses the shared gallons_remaining calibration)
+    TEMP_CONFIG_TOPIC = "homeassistant/sensor/gardyn/" + IDENTIFIER + "_water_gallons/config"
+    temp_config_payload = {
+        "name": "Water Gallons",
+        "unique_id": IDENTIFIER + "_water_gallons",
+        "state_topic": BASE_TOPIC + "/water/gallons",
+        "unit_of_measurement": "gal",
+        "icon": "mdi:water",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # Config for Refresh All Button
+    TEMP_CONFIG_TOPIC = "homeassistant/button/gardyn/" + IDENTIFIER + "_refresh_all/config"
+    temp_config_payload = {
+        "name": "Refresh All",
+        "unique_id": IDENTIFIER + "_refresh_all",
+        "command_topic": BASE_TOPIC + "/refresh/all",
+        "payload_press": "PRESS",
+        "icon": "mdi:refresh",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # Config for Refresh Status
+    TEMP_CONFIG_TOPIC = "homeassistant/sensor/gardyn/" + IDENTIFIER + "_refresh_status/config"
+    temp_config_payload = {
+        "name": "Refresh Status",
+        "unique_id": IDENTIFIER + "_refresh_status",
+        "state_topic": BASE_TOPIC + "/refresh/status",
+        "icon": "mdi:clipboard-check-outline",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # Config for Last Refresh timestamp
+    TEMP_CONFIG_TOPIC = "homeassistant/sensor/gardyn/" + IDENTIFIER + "_refresh_last/config"
+    temp_config_payload = {
+        "name": "Last Refresh",
+        "unique_id": IDENTIFIER + "_refresh_last",
+        "state_topic": BASE_TOPIC + "/refresh/last",
+        "device_class": "timestamp",
+        "icon": "mdi:clock-check-outline",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
     # Config for Water Low Binary Sensor
     TEMP_CONFIG_TOPIC = f"homeassistant/binary_sensor/gardyn/{IDENTIFIER}_water_low/config"
     temp_config_payload = {
@@ -472,7 +604,7 @@ def send_discovery_messages(client):
         "state_topic": BASE_TOPIC + "/water/low/cm",
         "command_topic": BASE_TOPIC + "/water/low/cm/set",
         "min": 0,
-        "max": 15,
+        "max": 25,
         "step": 0.5,
         "unit_of_measurement": "cm",
         "device_class": "distance",
@@ -827,6 +959,13 @@ def on_connect(client, userdata, flags, rc, properties=None):
     update_water_low_state(client)
     publish_grow_state(client)
     publish_schedule_state(client)
+    # Report the actuators' true duty cycle so HA never shows a stale retained
+    # value. Read-only; restore_actuator_state() owns any actual restoration.
+    try:
+        publish_light_state(client)
+        publish_pump_state(client)
+    except Exception:
+        logger.exception("Could not publish initial actuator state")
 
 
 def on_message(client, userdata, msg):
@@ -850,33 +989,35 @@ def on_message(client, userdata, msg):
         # === Pump Logic ===
         if topic_suffix == "pump/command":
             if payload.upper() == "ON":
-                if WATER_LOW_CM not in (None, 0):
-                    distance = safe_distance_measure()
-                    if distance is not None and distance > WATER_LOW_CM:
-                        logger.warning(
-                            f"Water too low ({distance:.2f}cm > {WATER_LOW_CM:.2f}cm), aborting pump"
-                        )
-                        flash_lights()
-                        client.publish(BASE_TOPIC + "/water/low/state", "ON", retain=True)
-                        return
-                    else:
-                        client.publish(BASE_TOPIC + "/water/low/state", "OFF", retain=True)
+                if not water_ok_for_pump(client):
+                    # Report the real (still stopped) state so HA does not sit
+                    # waiting on a transition that never happened.
+                    publish_pump_state(client)
+                    return
+                if speed <= 0:
+                    # A previous slider move to 0 must not leave the button inert.
+                    speed = 100
                 pump.set_speed(speed)
                 _arm_pump_safety()
-                client.publish(BASE_TOPIC + "/pump/state", "ON")
+                publish_pump_state(client)
             elif payload.upper() == "OFF":
                 pump.off()
                 _cancel_pump_safety()
-                client.publish(BASE_TOPIC + "/pump/state", "OFF")
+                publish_pump_state(client)
 
         elif topic_suffix == "pump/speed/set" and payload.isdigit():
-            speed = int(payload)
+            requested = int(payload)
+            # The slider must honour the same dry-run guard as the power button.
+            if requested > 0 and not water_ok_for_pump(client):
+                publish_pump_state(client)
+                return
+            speed = requested
             pump.set_speed(speed)
             if speed > 0:
                 _arm_pump_safety()
             else:
                 _cancel_pump_safety()
-            client.publish(BASE_TOPIC + "/pump/speed/state", str(speed))
+            publish_pump_state(client)
 
         # === Light Logic ===
         elif topic_suffix == "light/command":
@@ -896,7 +1037,11 @@ def on_message(client, userdata, msg):
         elif topic_suffix == "water/level/get":
             distance = safe_distance_measure()
             if distance is not None:
-                client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}")
+                publish_water_readings(client, distance)
+
+        elif topic_suffix == "refresh/all":
+            # Camera capture takes several seconds; never block the MQTT loop.
+            threading.Thread(target=refresh_all, args=(client,), daemon=True).start()
 
         elif topic_suffix == "water/low/cm/set":
             try:
@@ -1005,76 +1150,114 @@ def publish_water_level(client):
         if distance is None:
             distance = measure_distance_median()
         if distance is not None:
-            logger.info(f"Publishing Water Level: {distance:.2f}cm")
-            client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}")
+            logger.info(f"Publishing Water Level: {distance:.2f}cm airgap")
+            publish_water_readings(client, distance)
         sleep(WATER_CHECK_SECONDS)
+
+
+def capture_and_publish_images(client):
+    """Capture one frame from each camera, archive it, and publish both JPEGs."""
+    # Capture upper camera image
+    subprocess.check_call(
+        [
+            "fswebcam",
+            "-d",
+            UPPER_CAMERA_DEVICE,
+            "-r",
+            CAMERA_RESOLUTION,
+            "-S",
+            "2",
+            "-F",
+            "2",
+            "--no-banner",
+            UPPER_IMAGE_PATH,
+        ]
+    )
+    logger.info(f"Captured image from upper camera ({UPPER_CAMERA_DEVICE})")
+
+    # Capture lower camera image
+    subprocess.check_call(
+        [
+            "fswebcam",
+            "-d",
+            LOWER_CAMERA_DEVICE,
+            "-r",
+            CAMERA_RESOLUTION,
+            "-S",
+            "2",
+            "-F",
+            "2",
+            "--no-banner",
+            LOWER_IMAGE_PATH,
+        ]
+    )
+    logger.info(f"Captured image from lower camera ({LOWER_CAMERA_DEVICE})")
+
+    # Archive timestamped frames for timelapse assembly.
+    camera_mod.archive_frame(UPPER_IMAGE_PATH, "upper")
+    camera_mod.archive_frame(LOWER_IMAGE_PATH, "lower")
+
+    with open(UPPER_IMAGE_PATH, "rb") as f:
+        client.publish(BASE_TOPIC + "/image/upper_camera", payload=f.read(), qos=0, retain=True)
+        logger.info("Published image to /image/upper_camera")
+
+    with open(LOWER_IMAGE_PATH, "rb") as f:
+        client.publish(BASE_TOPIC + "/image/lower_camera", payload=f.read(), qos=0, retain=True)
+        logger.info("Published image to /image/lower_camera")
+
+
+def refresh_all(client):
+    """Force an immediate read of every sensor, actuator and camera.
+
+    Each step is isolated so one flaky sensor (the AM2320 in particular) cannot
+    stop the rest of the refresh. The actuator steps are read-only: they report
+    the live duty cycle of the light and pump without changing either.
+    """
+    logger.info("Refresh All: starting forced poll")
+
+    steps = (
+        ("water level", lambda: publish_water_readings(client, safe_distance_measure())),
+        ("water low state", lambda: update_water_low_state(client)),
+        (
+            "pcb temperature",
+            lambda: client.publish(BASE_TOPIC + "/pcb/temperature", f"{get_pcb_temperature():.2f}"),
+        ),
+        (
+            "temperature",
+            lambda: client.publish(BASE_TOPIC + "/temperature", f"{temperature_sensor.read():.2f}"),
+        ),
+        (
+            "humidity",
+            lambda: client.publish(BASE_TOPIC + "/humidity", f"{humidity_sensor.read():.2f}"),
+        ),
+        ("light state", lambda: publish_light_state(client)),
+        ("pump state", lambda: publish_pump_state(client)),
+        ("cameras", lambda: capture_and_publish_images(client)),
+    )
+
+    failed = []
+    for name, step in steps:
+        try:
+            step()
+            logger.info("Refresh All: %s OK", name)
+        except Exception as exc:
+            failed.append(name)
+            logger.error("Refresh All: %s FAILED (%s)", name, exc)
+
+    status = "OK" if not failed else "PARTIAL: " + ", ".join(failed) + " failed"
+    client.publish(BASE_TOPIC + "/refresh/status", status, retain=True)
+    client.publish(
+        BASE_TOPIC + "/refresh/last",
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        retain=True,
+    )
+    logger.info("Refresh All: finished (%s)", status)
 
 
 def publish_images(client):
     while True:
         try:
-            # Capture upper camera image
-            subprocess.check_call(
-                [
-                    "fswebcam",
-                    "-d",
-                    UPPER_CAMERA_DEVICE,
-                    "-r",
-                    CAMERA_RESOLUTION,
-                    "-S",
-                    "2",
-                    "-F",
-                    "2",
-                    "--no-banner",
-                    UPPER_IMAGE_PATH,
-                ]
-            )
-            logger.info(f"Captured image from upper camera ({UPPER_CAMERA_DEVICE})")
-
-            # Capture lower camera image
-            subprocess.check_call(
-                [
-                    "fswebcam",
-                    "-d",
-                    LOWER_CAMERA_DEVICE,
-                    "-r",
-                    CAMERA_RESOLUTION,
-                    "-S",
-                    "2",
-                    "-F",
-                    "2",
-                    "--no-banner",
-                    LOWER_IMAGE_PATH,
-                ]
-            )
-            logger.info(f"Captured image from lower camera ({LOWER_CAMERA_DEVICE})")
-
-            # Archive timestamped frames for timelapse assembly.
-            camera_mod.archive_frame(UPPER_IMAGE_PATH, "upper")
-            camera_mod.archive_frame(LOWER_IMAGE_PATH, "lower")
-
-            # Publish upper camera image
-            with open(UPPER_IMAGE_PATH, "rb") as f:
-                upper_cam_jpeg_data = f.read()  # Read as raw binary
-                client.publish(
-                    BASE_TOPIC + "/image/upper_camera",
-                    payload=upper_cam_jpeg_data,
-                    qos=0,
-                    retain=True,
-                )
-                logger.info("Published image to /image/upper_camera")
-
-            # Publish lower camera image
-            with open(LOWER_IMAGE_PATH, "rb") as f:
-                lower_cam_jpeg_data = f.read()  # Read as raw binary
-                client.publish(
-                    BASE_TOPIC + "/image/lower_camera",
-                    payload=lower_cam_jpeg_data,
-                    qos=0,
-                    retain=True,
-                )
-                logger.info("Published image to /image/lower_camera")
-
+            capture_and_publish_images(client)
         except subprocess.CalledProcessError as e:
             logger.error(f"Camera capture failed: {e}")
         except Exception:
