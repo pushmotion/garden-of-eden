@@ -530,7 +530,7 @@
     async function loadMedia(id, path, ms) {
       const el = $(id);
       try {
-        const r = await fetchT(path + "?t=" + Date.now(), { headers: headers() }, ms || 20000);
+        const r = await fetchT(path + "?t=" + Date.now(), { headers: headers() }, ms || 30000);
         if (r.status === 401) { needKey(); return false; }
         if (!r.ok) return false;
         const url = URL.createObjectURL(await r.blob());
@@ -540,9 +540,17 @@
         return true;
       } catch { return false; }
     }
-    function loadCams() {
-      loadMedia("cam-upper", "/camera/upper");
-      loadMedia("cam-lower", "/camera/lower");
+    // Two USB captures at once contend on the Pi's bus (measured 17-20s each in
+    // parallel vs 2.5-3s sequentially), so take them one at a time and skip a tick
+    // rather than stacking passes when the interval is shorter than a full cycle.
+    let camBusy = false;
+    async function loadCams() {
+      if (camBusy) return;
+      camBusy = true;
+      try {
+        await loadMedia("cam-upper", "/camera/upper", 30000);
+        await loadMedia("cam-lower", "/camera/lower", 30000);
+      } finally { camBusy = false; }
     }
     function toggleCamAuto() {
       if ($("cam-auto").checked) { loadCams(); camTimer = setInterval(loadCams, camInterval); }
