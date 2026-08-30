@@ -336,6 +336,31 @@ def publish_pump_state(client):
     logger.info("Pump is %s at %.0f%%", "ON" if level > 0 else "OFF", level)
 
 
+def commit_light_state(client):
+    """Record a commanded light change: publish it, and remember it.
+
+    ``publish_light_state`` only reports. This additionally syncs the toggle
+    flag the physical button switches against and persists the state for
+    power-loss recovery, so a change made over MQTT is not invisible to both.
+    """
+    global light_state
+    light_state = light.get_brightness() > 0
+    publish_light_state(client)
+    state_lib.save_state(light_on=light_state, brightness=brightness)
+
+
+def commit_pump_state(client):
+    """Record a commanded pump change: publish it, and remember it.
+
+    Counterpart to ``commit_light_state``; see there for why reporting alone is
+    not enough on the command paths.
+    """
+    global pump_state
+    pump_state = pump.get_speed() > 0
+    publish_pump_state(client)
+    state_lib.save_state(pump_on=pump_state, speed=speed)
+
+
 def publish_water_readings(client, distance):
     """Publish the raw airgap plus the derived depth, fill percentage and gallons.
 
@@ -992,24 +1017,24 @@ def on_message(client, userdata, msg):
                 if not water_ok_for_pump(client):
                     # Report the real (still stopped) state so HA does not sit
                     # waiting on a transition that never happened.
-                    publish_pump_state(client)
+                    commit_pump_state(client)
                     return
                 if speed <= 0:
                     # A previous slider move to 0 must not leave the button inert.
                     speed = 100
                 pump.set_speed(speed)
                 _arm_pump_safety()
-                publish_pump_state(client)
+                commit_pump_state(client)
             elif payload.upper() == "OFF":
                 pump.off()
                 _cancel_pump_safety()
-                publish_pump_state(client)
+                commit_pump_state(client)
 
         elif topic_suffix == "pump/speed/set" and payload.isdigit():
             requested = int(payload)
             # The slider must honour the same dry-run guard as the power button.
             if requested > 0 and not water_ok_for_pump(client):
-                publish_pump_state(client)
+                commit_pump_state(client)
                 return
             speed = requested
             pump.set_speed(speed)
@@ -1017,21 +1042,21 @@ def on_message(client, userdata, msg):
                 _arm_pump_safety()
             else:
                 _cancel_pump_safety()
-            publish_pump_state(client)
+            commit_pump_state(client)
 
         # === Light Logic ===
         elif topic_suffix == "light/command":
             if payload.upper() == "ON":
                 light.set_duty_cycle(brightness)
-                client.publish(BASE_TOPIC + "/light/state", "ON")
+                commit_light_state(client)
             elif payload.upper() == "OFF":
                 light.off()
-                client.publish(BASE_TOPIC + "/light/state", "OFF")
+                commit_light_state(client)
 
         elif topic_suffix == "light/brightness/set" and payload.isdigit():
             brightness = int(payload)
             light.set_duty_cycle(brightness)
-            client.publish(BASE_TOPIC + "/light/brightness/state", str(brightness))
+            commit_light_state(client)
 
         # === Water Level ===
         elif topic_suffix == "water/level/get":
