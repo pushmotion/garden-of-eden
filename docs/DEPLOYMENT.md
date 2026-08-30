@@ -164,6 +164,30 @@ hard-caps any single run at 5 minutes regardless of how it was started.
 Vacation mode overrides the schedule with lights 10:00–16:00 at 50% and a 3-minute
 pump run at 12:00.
 
+### Current schedule
+
+| | |
+|---|---|
+| Lights | 05:00–21:00 daily at 50% (16 h photoperiod) |
+| Pump | 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 — 3 min each, 18 min/day |
+| Default on-duty | `DEFAULT_BRIGHTNESS=50`, `DEFAULT_PUMP_SPEED=50` |
+
+That compiles to 56 marked crontab lines (14 light + 42 pump). `bin/water.sh`
+hardcodes `SPEED=50`, so scheduled pump runs are at 50% regardless of
+`DEFAULT_PUMP_SPEED` — the two happen to agree here.
+
+**Timezone:** cron fires in the Pi's local zone, which is `America/New_York`
+(a region zone, not a fixed offset), with NTP active. Schedules therefore track
+daylight saving automatically and stay at 05:00/21:00 local year-round. Verify
+with `timedatectl` after any OS reinstall.
+
+The MQTT entities can only express **one** pump run per day, so Home Assistant's
+"pump time" shows `06:00` — the first of the six. The other five are real and in
+cron, but invisible to HA. **Changing the pump time or duration from the HA
+dashboard rewrites all seven days down to that single run**, discarding the other
+five. To keep multi-cycle watering, edit the schedule via `apply_schedule()` or
+`POST /schedule` instead, then restart `mqtt.service` so HA re-reads it.
+
 ## Grow cycle
 
 State lives in `~/.garden_grow.json`, which **does not exist until the "Grow
@@ -211,9 +235,8 @@ automation trigger.
       harness unplugged with `mqtt.service` and `pigpiod` stopped. A multimeter
       continuity check with the Pi powered off remains the definitive test for
       GPIO-to-5V shorts, which software cannot detect.
-- [ ] **No schedule is configured.** Verified: no user crontab, no root crontab,
-      no `/etc/cron.d` entries, no systemd timers. The tower currently runs no
-      automation at all.
+- [x] ~~**No schedule is configured.**~~ — configured 2026-08-30, see
+      "Current schedule" above.
 - [ ] **The Pi still permits password SSH.** Key auth is set up; consider
       `PasswordAuthentication no` in `/etc/ssh/sshd_config`.
 - [ ] **AI plant-health monitoring** — planned, not built. The service already
