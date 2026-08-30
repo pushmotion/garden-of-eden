@@ -232,6 +232,11 @@
 
     <div id="alerts"></div>
 
+    <div id="keyalert" class="alert-banner" style="display:none">
+      <span>API key required - this Pi sets <code>GARDEN_API_KEY</code>. Enter it in Settings to load data.</span>
+      <button class="btn" onclick="needKey()">Enter key</button>
+    </div>
+
     <div class="card" id="settings">
       <h2>Settings</h2>
       <div class="row">
@@ -421,6 +426,19 @@
     function toast(msg, err) { const t = $("toast"); t.textContent = msg; t.className = "show" + (err ? " err" : ""); setTimeout(() => t.className = "", 1600); }
     function conn(ok) { $("conn").className = "dot " + (ok ? "ok" : "bad"); }
 
+    // A 401 means the firmware has GARDEN_API_KEY set but this browser has no key
+    // (or a stale one). Surface it instead of leaving every tile blank - /health is
+    // exempt from auth, so the connection dot stays green and hides the real cause.
+    let keyPrompted = false;
+    function needKey() {
+      $("keyalert").style.display = "flex";
+      if (keyPrompted) return;
+      keyPrompted = true;
+      $("settings").classList.add("open");
+      $("api-key").value = API_KEY;
+      $("api-key").focus();
+    }
+
     // fetch with a timeout so a hung/unreachable Pi never freezes the UI.
     async function fetchT(path, opts, ms) {
       const ctrl = new AbortController();
@@ -430,6 +448,7 @@
     }
     async function get(path) {
       const r = await fetchT(path, { headers: headers() });
+      if (r.status === 401) { needKey(); throw new Error(401); }
       if (!r.ok) throw new Error(r.status);
       conn(true); return r.json();
     }
@@ -437,6 +456,7 @@
       try {
         const r = await fetchT(path, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(body || {}) });
         let d = {}; try { d = await r.json(); } catch {}
+        if (r.status === 401) needKey();
         conn(r.ok); toast(d.message || d.error || (r.ok ? "ok" : "error " + r.status), !r.ok); return d;
       } catch (e) { conn(false); toast(e.name === "AbortError" ? "request timed out" : "error: " + e.message, true); }
     }
@@ -779,7 +799,7 @@
       });
     }
     function toggleSettings() { $("settings").classList.toggle("open"); $("api-key").value = API_KEY; }
-    function saveKey() { API_KEY = $("api-key").value.trim(); localStorage.setItem("garden_key", API_KEY); toast("key saved"); loadSystem(); refresh(); }
+    function saveKey() { API_KEY = $("api-key").value.trim(); localStorage.setItem("garden_key", API_KEY); $("keyalert").style.display = "none"; keyPrompted = false; toast("key saved"); loadSystem(); refresh(); }
 
     setupCollapsible();
     $("theme-btn").textContent = document.documentElement.dataset.theme === "dark" ? "🌙" : "☀️";
