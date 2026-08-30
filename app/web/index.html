@@ -331,8 +331,8 @@
         </span>
       </h2>
       <div class="cams">
-        <figure class="cam"><img id="cam-upper" alt="upper camera"><figcaption>Upper</figcaption></figure>
-        <figure class="cam"><img id="cam-lower" alt="lower camera"><figcaption>Lower</figcaption></figure>
+        <figure class="cam"><img id="cam-upper" alt="upper camera"><figcaption id="cap-upper">Upper</figcaption></figure>
+        <figure class="cam"><img id="cam-lower" alt="lower camera"><figcaption id="cap-lower">Lower</figcaption></figure>
       </div>
       <h2 style="margin-top:18px">Timelapse
         <span style="display:flex; gap:8px">
@@ -543,13 +543,21 @@
     // Two USB captures at once contend on the Pi's bus (measured 17-20s each in
     // parallel vs 2.5-3s sequentially), so take them one at a time and skip a tick
     // rather than stacking passes when the interval is shorter than a full cycle.
+    // Consecutive frames of a stationary tower look identical, so without a
+    // timestamp there is no way to tell a refresh landed.
+    function stampCam(which, ok) {
+      const el = $("cap-" + which);
+      const name = which === "upper" ? "Upper" : "Lower";
+      el.textContent = name + " \u00b7 " + (ok ? new Date().toLocaleTimeString() : "capture failed");
+      el.style.color = ok ? "" : "var(--red)";
+    }
     let camBusy = false;
     async function loadCams() {
       if (camBusy) return;
       camBusy = true;
       try {
-        await loadMedia("cam-upper", "/camera/upper", 30000);
-        await loadMedia("cam-lower", "/camera/lower", 30000);
+        stampCam("upper", await loadMedia("cam-upper", "/camera/upper", 30000));
+        stampCam("lower", await loadMedia("cam-lower", "/camera/lower", 30000));
       } finally { camBusy = false; }
     }
     function toggleCamAuto() {
