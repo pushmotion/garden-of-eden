@@ -528,6 +528,7 @@
     async function loadGrow() {
       try {
         const g = await get("/grow");
+        nutrientDose = g.nutrient_dose || "full";
         renderAlerts(g.due || []);
         $("grow-stage").value = g.stage;
         if (g.started) { const d = Math.floor((Date.now() - new Date(g.started)) / 86400000); $("grow-days").textContent = `day ${d}`; }
@@ -613,12 +614,22 @@
       root_check: "Check the roots",
       harvest: "Ready to harvest / trim",
       nutrient: "Add plant food (nutrients)",
+      reservoir_change: "Swap out about half the reservoir",
     };
+    // The first feed of a cycle is full strength; later ones land on top of what
+    // the last one left behind, so the banner has to say which is meant.
+    let nutrientDose = "full";
+    function reminderLabel(key) {
+      if (key !== "nutrient") return REMINDER_LABELS[key] || key;
+      return nutrientDose === "reduced"
+        ? "Add plant food - reduced dose (about half to two-thirds)"
+        : "Add plant food - full dose (first feed of this cycle)";
+    }
     function renderAlerts(due) {
       const box = $("alerts"); box.innerHTML = "";
       (due || []).forEach(key => {
         const div = document.createElement("div"); div.className = "alert-banner";
-        const span = document.createElement("span"); span.textContent = REMINDER_LABELS[key] || key;
+        const span = document.createElement("span"); span.textContent = reminderLabel(key);
         const btn = document.createElement("button"); btn.className = "btn"; btn.textContent = "Done";
         btn.onclick = () => post("/grow/acknowledge", { key }).then(loadGrow);
         div.append(span, btn); box.appendChild(div);
