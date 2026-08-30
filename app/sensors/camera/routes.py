@@ -43,6 +43,20 @@ def get_timelapse(cam):
     return send_file(path, mimetype="video/mp4")
 
 
+@camera_blueprint.route("/timelapse/<cam>/status", methods=["GET"])
+def timelapse_status(cam):
+    """How much history is archived, so the UI can explain an empty player
+    instead of showing a blank video box."""
+    if cam not in camera.CAMERAS:
+        return jsonify(error="unknown camera"), 400
+    stats = camera.frame_stats(cam)
+    stats["min_frames"] = config.TIMELAPSE_MIN_FRAMES
+    stats["ready"] = stats["frames"] >= config.TIMELAPSE_MIN_FRAMES
+    stats["has_video"] = os.path.exists(camera.timelapse_path(cam))
+    stats["interval_seconds"] = config.IMAGE_INTERVAL_SECONDS
+    return jsonify(stats)
+
+
 @camera_blueprint.route("/timelapse/<cam>", methods=["POST"])
 def make_timelapse(cam):
     if cam not in camera.CAMERAS:

@@ -76,18 +76,58 @@ def archive_frame(src_path, cam):
         logger.error("Timelapse archive failed for %s: %s", cam, exc)
 
 
+def _frame_stamp(path):
+    """Parse the capture time back out of an archived frame's filename."""
+    try:
+        name = os.path.basename(path).split(".")[0]
+        return datetime.datetime.strptime(name, "%Y%m%d-%H%M%S").isoformat()
+    except ValueError:
+        return None
+
+
+def framerate_for(count):
+    """Frame rate to assemble ``count`` frames at.
+
+    A week of hourly frames at the full rate is only a few seconds long, so slow
+    short archives down toward TIMELAPSE_TARGET_SECONDS rather than letting them
+    flash past. Never below 1fps, never above TIMELAPSE_FPS.
+    """
+    target = count / float(max(1, config.TIMELAPSE_TARGET_SECONDS))
+    return max(1, min(config.TIMELAPSE_FPS, int(round(target))))
+
+
+def clip_seconds(count):
+    """How long the assembled clip would run, at the rate framerate_for picks."""
+    if not count:
+        return 0.0
+    return round(count / float(framerate_for(count)), 1)
+
+
+def frame_stats(cam):
+    """Archived frame count plus first/last capture times, so the UI can say how
+    much history exists before a build is worth doing."""
+    frames = sorted(glob.glob(os.path.join(_frames_dir(cam), "*.jpg")))
+    return {
+        "frames": len(frames),
+        "first": _frame_stamp(frames[0]) if frames else None,
+        "last": _frame_stamp(frames[-1]) if frames else None,
+        "seconds": clip_seconds(len(frames)),
+    }
+
+
 def generate_timelapse(cam):
     """Assemble the archived frames for ``cam`` into an mp4. Raises
     FileNotFoundError if no frames have been archived yet."""
     folder = _frames_dir(cam)
-    if not glob.glob(os.path.join(folder, "*.jpg")):
+    frames = glob.glob(os.path.join(folder, "*.jpg"))
+    if not frames:
         raise FileNotFoundError("no frames archived yet")
     out = timelapse_path(cam)
     cmd = [
         "ffmpeg",
         "-y",
         "-framerate",
-        str(config.TIMELAPSE_FPS),
+        str(framerate_for(len(frames))),
         "-pattern_type",
         "glob",
         "-i",
