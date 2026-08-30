@@ -146,6 +146,12 @@ TIMELAPSE_DIR = os.getenv(
 )
 TIMELAPSE_MAX_FRAMES = _get_int("TIMELAPSE_MAX_FRAMES", 720)
 TIMELAPSE_FPS = _get_int("TIMELAPSE_FPS", 12)
+# A build works with any number of frames, but a short archive played at the full
+# frame rate flashes past. Frame rate is scaled down to stretch small archives to
+# roughly TIMELAPSE_TARGET_SECONDS; MIN_FRAMES is only the point at which the UI
+# stops warning that there is not much history yet (168 = 7 days of hourly frames).
+TIMELAPSE_MIN_FRAMES = _get_int("TIMELAPSE_MIN_FRAMES", 168)
+TIMELAPSE_TARGET_SECONDS = _get_int("TIMELAPSE_TARGET_SECONDS", 10)
 
 # ---------------------------------------------------------------------------
 # REST API auth (optional). When GARDEN_API_KEY is set, non-localhost

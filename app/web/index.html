@@ -171,6 +171,7 @@
     /* Per-pod plant tracking */
     .pods { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
     @media (max-width:640px){ .pods { grid-template-columns:1fr 1fr; } }
+    .tlnote { font-size:.62rem; line-height:1.4; padding:4px 2px 0; }
     .pod { border:1px solid var(--line); background:var(--surface-2); border-radius:10px; padding:8px; }
     .pod .pn { font-size:.6rem; color:var(--faint); font-weight:700; letter-spacing:.05em; }
     .pod input { width:100%; margin:4px 0; font-size:.8rem; padding:4px 6px; border-radius:7px; }
@@ -341,8 +342,8 @@
         </span>
       </h2>
       <div class="cams">
-        <figure class="cam"><video id="tl-upper" controls preload="none" playsinline muted loop></video><figcaption>Upper timelapse</figcaption></figure>
-        <figure class="cam"><video id="tl-lower" controls preload="none" playsinline muted loop></video><figcaption>Lower timelapse</figcaption></figure>
+        <figure class="cam"><video id="tl-upper" controls preload="none" playsinline muted loop></video><figcaption>Upper timelapse</figcaption><div class="tlnote muted" id="tl-note-upper"></div></figure>
+        <figure class="cam"><video id="tl-lower" controls preload="none" playsinline muted loop></video><figcaption>Lower timelapse</figcaption><div class="tlnote muted" id="tl-note-lower"></div></figure>
       </div>
     </div>
 
@@ -564,13 +565,32 @@
       if ($("cam-auto").checked) { loadCams(); camTimer = setInterval(loadCams, camInterval); }
       else { clearInterval(camTimer); camTimer = null; }
     }
-    function loadTimelapses() {
-      ["upper", "lower"].forEach(c => loadMedia("tl-" + c, "/camera/timelapse/" + c, 60000));
+    // A build works at any frame count, but an archive only hours old makes a
+    // clip barely a second long, so say how much history exists rather than
+    // leaving an empty player with no explanation.
+    async function loadTimelapses() {
+      for (const c of ["upper", "lower"]) {
+        const note = $("tl-note-" + c);
+        let st = null;
+        try { st = await get("/camera/timelapse/" + c + "/status"); } catch { }
+        if (!st) { note.textContent = ""; continue; }
+        if (st.has_video) await loadMedia("tl-" + c, "/camera/timelapse/" + c, 60000);
+        if (!st.frames) {
+          note.textContent = "No frames archived yet - one is captured automatically every "
+            + Math.round(st.interval_seconds / 60) + " min.";
+          continue;
+        }
+        const since = st.first ? new Date(st.first).toLocaleDateString() : "?";
+        const days = Math.max(1, Math.round(st.min_frames * st.interval_seconds / 86400));
+        note.textContent = st.frames + " frames since " + since + " - builds a ~" + st.seconds + "s clip"
+          + (st.ready ? "." : ". Recommended from " + st.min_frames + " frames (~" + days + " days).")
+          + (st.has_video ? "" : " No clip built yet.");
+      }
     }
     async function makeTimelapse(cam) {
       toast("Building " + cam + " timelapse (can take a minute)");
       const r = await post("/camera/timelapse/" + cam);
-      if (r && !r.error) await loadMedia("tl-" + cam, "/camera/timelapse/" + cam, 60000);
+      if (r && !r.error) await loadTimelapses();
     }
     // A range input with no value attribute parks at its midpoint, so the UI used
     // to claim 50% while the hardware was off. Seed both the slider and its label
