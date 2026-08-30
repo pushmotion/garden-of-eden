@@ -38,6 +38,8 @@ class MqttControlTestCase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.config.SCHEDULE_FILE = os.path.join(self.tmp, "sched.json")
         self.config.GROW_STATE_FILE = os.path.join(self.tmp, "grow.json")
+        # Actuator state is persisted too; keep it out of the developer's home.
+        self.config.STATE_FILE = os.path.join(self.tmp, "state.json")
         # Never touch the host crontab.
         self.mqtt.sched_lib._read_crontab = lambda: []
         self.mqtt.sched_lib._write_crontab = lambda lines: None
@@ -136,6 +138,45 @@ class MqttControlTestCase(unittest.TestCase):
         self.send("grow/stage/set", "harvest")
         self.send("grow/start/set", "PRESS")
         self.assertEqual(self.mqtt.grow_lib.load_state()["stage"], "germination")
+
+    # --- actuator commands are persisted and tracked ---
+    # A command arriving over MQTT has to leave the same trace a physical button
+    # press does, or power-loss recovery restores a stale value and the button's
+    # next toggle fights whatever Home Assistant last did.
+    def test_light_command_persists_and_tracks_state(self):
+        self.send("light/command", "ON")
+        self.assertTrue(self.mqtt.state_lib.load_state()["light_on"])
+        self.assertTrue(self.mqtt.light_state)
+        self.assertIn("ON", self.published_for("light/state"))
+
+        self.send("light/command", "OFF")
+        self.assertFalse(self.mqtt.state_lib.load_state()["light_on"])
+        self.assertFalse(self.mqtt.light_state)
+
+    def test_light_brightness_persists(self):
+        self.send("light/brightness/set", "42")
+        self.assertEqual(self.mqtt.state_lib.load_state()["brightness"], 42)
+
+    def test_pump_speed_persists_and_tracks_state(self):
+        self.send("pump/speed/set", "60")
+        saved = self.mqtt.state_lib.load_state()
+        self.assertEqual(saved["speed"], 60)
+        self.assertTrue(saved["pump_on"])
+        self.assertTrue(self.mqtt.pump_state)
+
+        self.send("pump/speed/set", "0")
+        self.assertFalse(self.mqtt.state_lib.load_state()["pump_on"])
+        self.assertFalse(self.mqtt.pump_state)
+
+    def test_pump_speed_set_publishes_on_off_state(self):
+        """The slider must drive pump/state, not just pump/speed/state.
+
+        Without this HA shows the pump OFF while it runs, and then refuses to
+        send further brightness commands to what it believes is an off light.
+        """
+        self.send("pump/speed/set", "55")
+        self.assertIn("ON", self.published_for("pump/state"))
+        self.assertIn("55", self.published_for("pump/speed/state"))
 
 
 if __name__ == "__main__":
