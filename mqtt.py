@@ -912,13 +912,49 @@ def _set_schedule_flag(client, section, enabled):
     _apply_schedule(client, schedule)
 
 
-def _set_everyday_light(client, **changes):
-    """Update the everyday light window (one field) and write it to all 7 days."""
+def _set_light_brightness(client, brightness):
+    """Set brightness on every existing window, preserving each window's times.
+
+    The counterpart of _set_pump_duration: brightness is a property of each
+    window rather than a description of the day, so it applies to all of them
+    and the window count is untouched.
+    """
     schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    window = _everyday_light(schedule)
-    window.update(changes)
+    touched = 0
     for day in sched_lib.DAYS:
-        schedule["lights"]["days"][day] = [dict(window)]
+        for window in schedule["lights"]["days"][day]:
+            window["brightness"] = brightness
+            touched += 1
+    if not touched:
+        # Nothing scheduled yet, so seed a window per day rather than doing nothing.
+        seed = _everyday_light(schedule)
+        seed["brightness"] = brightness
+        for day in sched_lib.DAYS:
+            schedule["lights"]["days"][day] = [dict(seed)]
+    logger.info("Set light brightness to %s%% across %s existing window(s)", brightness, touched)
+    _apply_schedule(client, schedule)
+
+
+def _set_light_first_window(client, **changes):
+    """Move the *first* window of each day, leaving any later windows untouched.
+
+    The counterpart of _set_pump_first_time. A single on/off pair cannot express
+    a multi-window day, so this previously wrote one window over all seven days
+    and silently discarded the rest -- the same defect the pump setters carried.
+    Moving one window is a predictable, reversible edit; collapsing the day to
+    it is not.
+    """
+    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+    # Resolved once: appending to an empty day would otherwise change what the
+    # representative window is for the days after it.
+    seed = _everyday_light(schedule)
+    for day in sched_lib.DAYS:
+        windows = schedule["lights"]["days"][day]
+        if windows:
+            windows[0].update(changes)
+        else:
+            windows.append({**seed, **changes})
+    logger.info("Updated the first light window of each day: %s", changes)
     _apply_schedule(client, schedule)
 
 
@@ -1088,15 +1124,18 @@ def on_message(client, userdata, msg):
         elif topic_suffix == "schedule/vacation/enabled/set":
             _set_schedule_flag(client, "vacation", payload.upper() == "ON")
 
-        # === Everyday schedule setters (write one window/run to all 7 days) ===
+        # === Everyday schedule setters ===
+        # Each edits the saved schedule in place rather than replacing it: a
+        # scalar from HA cannot express a multi-window/multi-run day, so none of
+        # these may collapse one. See the setters for what each touches.
         elif topic_suffix == "schedule/lights/on/set":
-            _set_everyday_light(client, onTime=_time_from_ha(payload))
+            _set_light_first_window(client, onTime=_time_from_ha(payload))
 
         elif topic_suffix == "schedule/lights/off/set":
-            _set_everyday_light(client, offTime=_time_from_ha(payload))
+            _set_light_first_window(client, offTime=_time_from_ha(payload))
 
         elif topic_suffix == "schedule/lights/brightness/set" and payload.isdigit():
-            _set_everyday_light(client, brightness=max(0, min(100, int(payload))))
+            _set_light_brightness(client, max(0, min(100, int(payload))))
 
         elif topic_suffix == "schedule/pump/time/set":
             _set_pump_first_time(client, _time_from_ha(payload))
