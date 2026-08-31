@@ -456,6 +456,11 @@
     async function setPump(on) { await post(on ? "/pump/on" : "/pump/off"); setActive("pump", on); }
     async function runPump() { const s = +$("run-secs").value; await post("/pump/run", { seconds: s }); setActive("pump", true); }
 
+    // INA219 readings arrive at full float precision (0.24390243902439024 mA),
+    // which overflows the tile it is rendered into. Two decimals is already well
+    // past what the sensor resolves.
+    const fmtStat = v => (v == null || !isFinite(+v)) ? "\u2014" : (+v).toFixed(2);
+
     async function refresh() {
       const sensors = {
         "/temperature": ["s-temp", "temperature"],
@@ -482,7 +487,12 @@
       } catch { $("s-water").textContent = "n/a"; $("s-water-gal").textContent = "n/a"; $("s-water-status").textContent = ""; }
       try {
         const p = await get("/pump/stats");
-        if (p.BusVoltage != null) { $("p-volt").textContent = p.BusVoltage; $("p-curr").textContent = p.BusCurrent; $("p-pow").textContent = p.Power; $("p-shunt").textContent = p.ShuntVoltage ?? "—"; }
+        if (p.BusVoltage != null) {
+          $("p-volt").textContent = fmtStat(p.BusVoltage);
+          $("p-curr").textContent = fmtStat(p.BusCurrent);
+          $("p-pow").textContent = fmtStat(p.Power);
+          $("p-shunt").textContent = fmtStat(p.ShuntVoltage);
+        }
         else { $("p-volt").textContent = $("p-curr").textContent = $("p-pow").textContent = $("p-shunt").textContent = "—"; }
       } catch { /* optional */ }
       $("updated").textContent = "updated " + new Date().toLocaleTimeString();
