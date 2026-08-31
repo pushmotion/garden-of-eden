@@ -1,6 +1,8 @@
 import datetime
 import unittest
+from unittest.mock import patch
 
+import config
 from app.sensors.schedule import schedule as sched
 
 
@@ -311,3 +313,101 @@ class ScheduleEndpointTestCase(unittest.TestCase):
         body = self.client.get("/schedule/cron").get_json()
         self.assertIn("count", body)
         self.assertIsInstance(body["cron_lines"], list)
+
+
+class OneTimePumpRunTestCase(unittest.TestCase):
+    """One-shot runs must be additive: adding or applying a recurring schedule
+    can never disturb them, and vice versa (issue #32 / the HA schedule trap)."""
+
+    def setUp(self):
+        self.now = datetime.datetime(2026, 8, 31, 9, 0)
+        self.crontab = []
+
+        def fake_read():
+            return list(self.crontab)
+
+        def fake_write(lines):
+            self.crontab = list(lines)
+
+        self.read_patch = patch.object(sched, "_read_crontab", fake_read)
+        self.write_patch = patch.object(sched, "_write_crontab", fake_write)
+        self.read_patch.start()
+        self.write_patch.start()
+        self.addCleanup(self.read_patch.stop)
+        self.addCleanup(self.write_patch.stop)
+
+    def test_next_occurrence_today_then_tomorrow(self):
+        self.assertEqual(
+            sched.next_occurrence("15:00", now=self.now), datetime.datetime(2026, 8, 31, 15, 0)
+        )
+        self.assertEqual(
+            sched.next_occurrence("08:00", now=self.now), datetime.datetime(2026, 9, 1, 8, 0)
+        )
+
+    def test_add_installs_one_dated_line(self):
+        run = sched.add_one_time_pump_run("15:00", 3, now=self.now)
+        self.assertEqual(run["at"], datetime.datetime(2026, 8, 31, 15, 0))
+        self.assertEqual(run["seconds"], 180)
+        self.assertEqual(len(self.crontab), 1)
+        line = self.crontab[0]
+        self.assertTrue(line.startswith("0 15 31 8 * /usr/local/bin/water 180 "))
+        self.assertIn(sched.ONCE_MARKER, line)
+
+    def test_duration_is_capped_by_the_hard_limit(self):
+        run = sched.add_one_time_pump_run("15:00", 99, now=self.now)
+        self.assertEqual(run["seconds"], config.MAX_PUMP_RUN_SECONDS)
+
+    def test_pending_runs_are_listed_and_expired_ones_are_not(self):
+        sched.add_one_time_pump_run("15:00", 3, now=self.now)
+        self.assertEqual(len(sched.one_time_pump_runs(now=self.now)), 1)
+        later = datetime.datetime(2026, 8, 31, 16, 0)
+        self.assertEqual(sched.one_time_pump_runs(now=later), [])
+
+    def test_prune_removes_only_expired_lines(self):
+        sched.add_one_time_pump_run("10:00", 3, now=self.now)  # today 10:00
+        sched.add_one_time_pump_run("15:00", 3, now=self.now)  # today 15:00
+        self.assertEqual(len(self.crontab), 2)
+        sched.prune_one_time_pump_runs(now=datetime.datetime(2026, 8, 31, 11, 0))
+        self.assertEqual(len(self.crontab), 1)
+        self.assertIn("15:00", self.crontab[0])
+
+    def test_prune_never_blanks_an_unreadable_crontab(self):
+        self.crontab = []
+        self.assertEqual(sched.prune_one_time_pump_runs(now=self.now), [])
+        self.assertEqual(self.crontab, [])
+
+    def test_applying_a_schedule_preserves_a_pending_one_off(self):
+        sched.add_one_time_pump_run("15:00", 3, now=self.now)
+        schedule = {
+            "lights": {"enabled": True, "days": {"mon": [{"onTime": "05:00", "offTime": "21:00"}]}},
+            "pump": {"enabled": True, "days": {"mon": [{"time": "09:00", "duration": 3}]}},
+        }
+        with patch.object(sched, "save_schedule"):
+            sched.apply_schedule(schedule)
+        once = [ln for ln in self.crontab if sched.ONCE_MARKER in ln]
+        self.assertEqual(len(once), 1, "applying a recurring schedule dropped the one-off")
+
+    def test_one_offs_are_excluded_from_installed_recurring_lines(self):
+        sched.add_one_time_pump_run("15:00", 3, now=self.now)
+        self.assertEqual(sched.installed_cron_lines(), [])
+
+    def test_clear_removes_pending_runs_only(self):
+        self.crontab = ["0 5 * * 1 /usr/local/bin/light 65 " + sched.CRON_MARKER]
+        sched.add_one_time_pump_run("15:00", 3, now=self.now)
+        self.assertEqual(sched.clear_one_time_pump_runs(), 1)
+        self.assertEqual(len(self.crontab), 1)
+        self.assertIn(sched.CRON_MARKER, self.crontab[0])
+        self.assertNotIn(sched.ONCE_MARKER, self.crontab[0])
+
+    def test_default_duration_takes_the_shortest_scheduled_run(self):
+        schedule = {
+            "pump": {
+                "enabled": True,
+                "days": {
+                    "mon": [{"time": "09:00", "duration": 3}, {"time": "12:00", "duration": 5}]
+                },
+            },
+            "lights": {"enabled": False},
+        }
+        self.assertEqual(sched.default_pump_duration(schedule), 3)
+        self.assertEqual(sched.default_pump_duration({"pump": {"enabled": False}}), 3)
