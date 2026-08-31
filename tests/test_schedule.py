@@ -146,3 +146,75 @@ class NormalizeScheduleTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExpectedStateTestCase(unittest.TestCase):
+    """What the schedule says should be running right now.
+
+    Used on startup to recover from a power cut mid-photoperiod: cron drives the
+    actuators through the CLIs, which never update the persisted actuator state,
+    so without this the tower stays dark until the next scheduled on-time.
+    """
+
+    # 2026-08-31 is a Monday.
+    def _at(self, hour, minute=0, day=31):
+        return datetime.datetime(2026, 8, day, hour, minute)
+
+    def _daily(self, windows=None, runs=None, lights=True, pump=True):
+        return {
+            "lights": {"enabled": lights, "days": {d: list(windows or []) for d in sched.DAYS}},
+            "pump": {"enabled": pump, "days": {d: list(runs or []) for d in sched.DAYS}},
+        }
+
+    def test_inside_window_is_on_at_that_brightness(self):
+        s = self._daily([{"onTime": "05:00", "offTime": "21:00", "brightness": 65}])
+        self.assertEqual(sched.expected_light_state(s, now=self._at(9)), (True, 65))
+
+    def test_after_off_time_is_off(self):
+        s = self._daily([{"onTime": "05:00", "offTime": "21:00", "brightness": 65}])
+        self.assertEqual(sched.expected_light_state(s, now=self._at(22)), (False, 0))
+
+    def test_before_first_on_time_uses_yesterdays_off(self):
+        s = self._daily([{"onTime": "05:00", "offTime": "21:00", "brightness": 65}])
+        self.assertEqual(sched.expected_light_state(s, now=self._at(3)), (False, 0))
+
+    def test_window_spanning_midnight_follows_cron_semantics(self):
+        # Compiled as "on 23:00" and "off 07:00" on the same weekday, so at 02:00
+        # the most recent event is the previous day's 23:00 on.
+        s = self._daily([{"onTime": "23:00", "offTime": "07:00", "brightness": 80}])
+        self.assertEqual(sched.expected_light_state(s, now=self._at(2)), (True, 80))
+        self.assertEqual(sched.expected_light_state(s, now=self._at(8)), (False, 0))
+
+    def test_latest_of_several_windows_wins(self):
+        s = self._daily(
+            [
+                {"onTime": "05:00", "offTime": "09:00", "brightness": 40},
+                {"onTime": "17:00", "offTime": "21:00", "brightness": 90},
+            ]
+        )
+        self.assertEqual(sched.expected_light_state(s, now=self._at(18)), (True, 90))
+        self.assertEqual(sched.expected_light_state(s, now=self._at(12)), (False, 0))
+
+    def test_disabled_or_empty_expresses_no_opinion(self):
+        self.assertIsNone(sched.expected_light_state(self._daily(lights=False), now=self._at(9)))
+        self.assertIsNone(sched.expected_light_state(self._daily([]), now=self._at(9)))
+
+    def test_vacation_profile_overrides(self):
+        s = self._daily([{"onTime": "05:00", "offTime": "21:00", "brightness": 65}])
+        s["vacation"] = {"enabled": True, "until": None}
+        # Vacation keeps lights 10:00-16:00 at 50%.
+        self.assertEqual(sched.expected_light_state(s, now=self._at(12)), (True, 50))
+        self.assertEqual(sched.expected_light_state(s, now=self._at(9)), (False, 0))
+
+    def test_pump_run_in_progress_reports_remaining_seconds(self):
+        s = self._daily(runs=[{"time": "09:00", "duration": 3}])
+        self.assertEqual(sched.expected_pump_run(s, now=self._at(9, 1)), 120)
+
+    def test_pump_run_outside_window_is_none(self):
+        s = self._daily(runs=[{"time": "09:00", "duration": 3}])
+        self.assertIsNone(sched.expected_pump_run(s, now=self._at(9, 5)))
+        self.assertIsNone(sched.expected_pump_run(s, now=self._at(8, 59)))
+
+    def test_pump_disabled_is_none(self):
+        s = self._daily(runs=[{"time": "09:00", "duration": 3}], pump=False)
+        self.assertIsNone(sched.expected_pump_run(s, now=self._at(9, 1)))
