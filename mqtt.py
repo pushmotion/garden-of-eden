@@ -110,6 +110,9 @@ button = Button(
 # Variables to track the state of the light and pump
 light_state = False
 pump_state = False
+# Time used by the "One-Time Pump Run" button. Persisted so it survives a
+# restart, since the button is useless if the time it fires at is forgotten.
+manual_pump_time = state_lib.load_state().get("manual_pump_time") or "12:00"
 double_press_time = 1  # Time to detect a double press (in seconds)
 press_count = 0
 double_press_timer = None
@@ -756,6 +759,44 @@ def send_discovery_messages(client):
             "device": device_info,
         },
     )
+    # Arms a single dated cron entry at "Manual Pump Run Time". Adding a one-off
+    # deliberately does not touch the recurring schedule.
+    pub(
+        f"homeassistant/button/gardyn/{IDENTIFIER}_pump_run_once/config",
+        {
+            "name": "One-Time Pump Run",
+            "unique_id": IDENTIFIER + "_pump_run_once",
+            "command_topic": BASE_TOPIC + "/schedule/pump/manual/run/set",
+            "icon": "mdi:water-plus-outline",
+            "device": device_info,
+        },
+    )
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_once_next/config",
+        {
+            "name": "Pending One-Time Pump Run",
+            "unique_id": IDENTIFIER + "_pump_once_next",
+            "state_topic": BASE_TOPIC + "/schedule/pump/once/next",
+            "device_class": "timestamp",
+            "icon": "mdi:calendar-clock",
+            "device": device_info,
+        },
+    )
+    # The real hard cap, enforced in code on every path (MQTT, REST, CLI, cron).
+    # Read-only on purpose: it is a safety limit, not a per-run setting -- unlike
+    # "Pump Run Duration", which is the duration of each scheduled run.
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_max_seconds/config",
+        {
+            "name": "Max Pump Run Time",
+            "unique_id": IDENTIFIER + "_pump_max_seconds",
+            "state_topic": BASE_TOPIC + "/schedule/pump/max_seconds",
+            "unit_of_measurement": "s",
+            "device_class": "duration",
+            "icon": "mdi:timer-lock-outline",
+            "device": device_info,
+        },
+    )
     # Read-only companion to the writable "Pump Run Time" entity, which can only
     # express one run per day and so sits frozen on the first of a multi-cycle
     # schedule. device_class timestamp lets HA render it as "in 2 hours".
@@ -850,6 +891,14 @@ def send_discovery_messages(client):
             {"min": 0, "max": 100, "step": 1, "unit_of_measurement": "%"},
         ),
         ("time", "sched_pump_time", "Pump Run Time", "schedule/pump/time", "mdi:water-pump", {}),
+        (
+            "time",
+            "sched_pump_manual_time",
+            "Manual Pump Run Time",
+            "schedule/pump/manual/time",
+            "mdi:water-plus",
+            {},
+        ),
         (
             "number",
             "sched_pump_duration",
@@ -952,6 +1001,42 @@ def publish_schedule_state(client):
     except Exception:
         logger.exception("Error publishing schedule state")
     publish_next_pump_run(client)
+    publish_one_time_state(client)
+
+
+def publish_one_time_state(client):
+    """Publish the manual-run time, the pending one-off, and the hard cap."""
+    try:
+        client.publish(
+            BASE_TOPIC + "/schedule/pump/manual/time", _time_to_ha(manual_pump_time), retain=True
+        )
+        client.publish(
+            BASE_TOPIC + "/schedule/pump/max_seconds", str(MAX_PUMP_RUN_SECONDS), retain=True
+        )
+        pending = sched_lib.one_time_pump_runs()
+        payload = pending[0]["at"].astimezone().isoformat() if pending else "unavailable"
+        client.publish(BASE_TOPIC + "/schedule/pump/once/next", payload, retain=True)
+    except Exception:
+        logger.exception("Error publishing one-time pump run state")
+
+
+def arm_one_time_pump_run(client):
+    """Install a single dated cron entry at the manual run time.
+
+    Routed through sched_lib.add_one_time_pump_run(), which writes its own
+    marked line rather than going through apply_schedule() -- so pressing this
+    can never rewrite or discard the recurring schedule.
+    """
+    try:
+        run = sched_lib.add_one_time_pump_run(manual_pump_time, sched_lib.default_pump_duration())
+        logger.info(
+            "Armed a one-time pump run at %s for %ss", run["at"].isoformat(), run["seconds"]
+        )
+    except ValueError as exc:
+        logger.warning("Rejected one-time pump run: %s", exc)
+    except FileNotFoundError:
+        logger.error("Cannot arm a one-time pump run: crontab unavailable")
+    publish_one_time_state(client)
 
 
 def _next_pump_payload():
@@ -998,13 +1083,42 @@ def _set_everyday_light(client, **changes):
     _apply_schedule(client, schedule)
 
 
-def _set_everyday_pump(client, **changes):
-    """Update the everyday pump run (one field) and write it to all 7 days."""
+def _set_pump_duration(client, minutes):
+    """Set the duration on every existing run, preserving each run's time.
+
+    The previous behaviour rewrote all seven days down to a single run, so
+    nudging the duration control silently discarded a multi-cycle schedule --
+    seven 3-minute runs became one. This keeps every run and changes only how
+    long each lasts, which is what the control appears to promise.
+    """
     schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    run = _everyday_pump(schedule)
-    run.update(changes)
+    touched = 0
     for day in sched_lib.DAYS:
-        schedule["pump"]["days"][day] = [dict(run)]
+        for run in schedule["pump"]["days"][day]:
+            run["duration"] = minutes
+            touched += 1
+    if not touched:
+        # Nothing scheduled yet, so seed a run per day rather than doing nothing.
+        for day in sched_lib.DAYS:
+            schedule["pump"]["days"][day] = [{"time": "12:00", "duration": minutes}]
+    logger.info("Set pump duration to %s min across %s existing run(s)", minutes, touched)
+    _apply_schedule(client, schedule)
+
+
+def _set_pump_first_time(client, hhmm):
+    """Move the *first* run of each day, leaving any later runs untouched.
+
+    A single scalar cannot express a multi-run day. Moving one run is a
+    predictable, reversible edit; collapsing the day to it is not.
+    """
+    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+    for day in sched_lib.DAYS:
+        runs = schedule["pump"]["days"][day]
+        if runs:
+            runs[0]["time"] = hhmm
+        else:
+            runs.append({"time": hhmm, "duration": sched_lib.default_pump_duration(schedule)})
+    logger.info("Moved the first pump run of each day to %s", hhmm)
     _apply_schedule(client, schedule)
 
 
@@ -1031,7 +1145,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
 
 
 def on_message(client, userdata, msg):
-    global brightness, speed, WATER_LOW_CM
+    global brightness, speed, WATER_LOW_CM, manual_pump_time
 
     # Handle binary payloads (like image topics) — skip decoding
     if msg.topic.endswith("/image/upper_camera") or msg.topic.endswith("/image/lower_camera"):
@@ -1159,10 +1273,18 @@ def on_message(client, userdata, msg):
             _set_everyday_light(client, brightness=max(0, min(100, int(payload))))
 
         elif topic_suffix == "schedule/pump/time/set":
-            _set_everyday_pump(client, time=_time_from_ha(payload))
+            _set_pump_first_time(client, _time_from_ha(payload))
 
         elif topic_suffix == "schedule/pump/duration/set" and payload.isdigit():
-            _set_everyday_pump(client, duration=max(1, min(5, int(payload))))
+            _set_pump_duration(client, max(1, min(5, int(payload))))
+
+        elif topic_suffix == "schedule/pump/manual/time/set":
+            manual_pump_time = _time_from_ha(payload)
+            state_lib.save_state(manual_pump_time=manual_pump_time)
+            publish_one_time_state(client)
+
+        elif topic_suffix == "schedule/pump/manual/run/set":
+            arm_one_time_pump_run(client)
 
     except ValueError as e:
         logger.warning(f"Rejected message on topic {msg.topic}: {e}")

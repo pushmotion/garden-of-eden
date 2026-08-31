@@ -102,3 +102,46 @@ def get_installed_cron():
     """
     lines = sched.installed_cron_lines()
     return jsonify(count=len(lines), cron_lines=lines)
+
+
+@schedule_blueprint.route("/pump/once", methods=["GET"])
+def get_one_time_pump_runs():
+    """Pending one-shot pump runs (soonest first)."""
+    runs = sched.one_time_pump_runs()
+    return jsonify(
+        count=len(runs),
+        runs=[{"at": _iso(r["at"]), "seconds": r["seconds"]} for r in runs],
+    )
+
+
+@schedule_blueprint.route("/pump/once", methods=["POST"])
+def add_one_time_pump_run():
+    """Schedule a single pump run at ``time`` ("HH:MM"), today or tomorrow.
+
+    Installs one dated cron entry under its own marker. It does not go through
+    apply_schedule(), so adding a one-off cannot disturb the recurring schedule
+    -- the whole point of having it. ``duration`` defaults to the shortest run
+    already in the schedule, and is capped by MAX_PUMP_RUN_SECONDS either way.
+    """
+    data = request.get_json(silent=True) or {}
+    when = data.get("time")
+    if not isinstance(when, str):
+        return jsonify(error='expected {"time": "HH:MM"}'), 400
+    duration = data.get("duration", sched.default_pump_duration())
+    try:
+        run = sched.add_one_time_pump_run(when, duration)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except FileNotFoundError:
+        return jsonify(error="crontab not available on this host"), 503
+    return jsonify(at=_iso(run["at"]), seconds=run["seconds"]), 201
+
+
+@schedule_blueprint.route("/pump/once", methods=["DELETE"])
+def clear_one_time_pump_runs():
+    """Cancel every pending one-shot pump run."""
+    try:
+        removed = sched.clear_one_time_pump_runs()
+    except FileNotFoundError:
+        return jsonify(error="crontab not available on this host"), 503
+    return jsonify(removed=removed)
