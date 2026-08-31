@@ -5,6 +5,7 @@ from gpiozero import PWMLED
 from gpiozero.pins.pigpio import PiGPIOFactory
 
 import config
+from app.lib import hardware
 
 
 class GPIOController:
@@ -34,8 +35,11 @@ class Pump:
         # Note: for docker: PiGPIOFactory(host='pigpiod', port=8888)
         self.pin = pin
         self.pin_factory = pin_factory if pin_factory else PiGPIOFactory()
-        self.pump = PWMLED(self.pin, pin_factory=self.pin_factory)
+        # See Light.__init__: read the live duty cycle before constructing PWMLED
+        # so instantiating this driver cannot cut a scheduled pump run short.
         self.gpio = GPIOController(pin, self.pin_factory)
+        initial = hardware.current_duty_fraction(getattr(self.gpio, "pi", None), pin)
+        self.pump = PWMLED(self.pin, pin_factory=self.pin_factory, initial_value=initial)
         self.set_frequency(frequency)
 
     def on(self):
