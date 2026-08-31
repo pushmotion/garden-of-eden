@@ -122,6 +122,12 @@ WATER_LOW_CM = _get_float("WATER_LOW_CM", 0) or None
 # low-water alert. Kept short so a transient false alarm self-clears quickly.
 WATER_CHECK_SECONDS = _get_int("WATER_CHECK_SECONDS", 180)
 
+# How often (seconds) the MQTT service re-reads the light/pump duty cycles and
+# republishes them. cron, the REST API, the CLI and the physical button all drive
+# the hardware without going through the MQTT service, so without polling Home
+# Assistant drifts out of step with reality. 0 disables the poll.
+ACTUATOR_POLL_SECONDS = _get_int("ACTUATOR_POLL_SECONDS", 15)
+
 # Tank geometry for the cm->gallons readout: distance (cm) from the sensor to the
 # water surface when the tank is full vs empty, and the tank capacity in gallons
 # (Gardyn Home ~5 gal, Studio ~4 gal). Calibrate FULL/EMPTY to your unit.

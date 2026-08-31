@@ -230,6 +230,114 @@ def _write_crontab(lines):
     subprocess.run(["crontab", "-"], input=payload, text=True, check=True)
 
 
+def _effective_days(schedule, kind, now):
+    """The day map in force for ``kind`` ("lights"/"pump"), honouring Vacation
+    mode, or None when that half of the schedule is switched off."""
+    if is_vacation_active(schedule, today=now.date()):
+        return {day: list(VACATION_PROFILE[kind]) for day in DAYS}
+    section = schedule.get(kind) or {}
+    if not section.get("enabled"):
+        return None
+    return section.get("days") or _empty_days()
+
+
+def expected_light_state(schedule, now=None, lookback_days=8):
+    """What the compiled schedule has the light doing at ``now``.
+
+    Returns ``(on, brightness)``, or ``None`` when the schedule expresses no
+    opinion (lights disabled, or no windows at all) so callers leave the pin be.
+
+    This deliberately replays the crontab's own semantics -- the most recent
+    on/off event at or before ``now`` wins -- rather than interpreting each
+    window as an interval. Windows that run past midnight, several windows in
+    one day, and deliberate gaps then all agree with what cron actually did.
+    """
+    now = now or datetime.datetime.now()
+    schedule = normalize_schedule(schedule)
+    days = _effective_days(schedule, "lights", now)
+    if days is None:
+        return None
+
+    latest = None
+    for delta in range(lookback_days):
+        date = (now - datetime.timedelta(days=delta)).date()
+        for window in days.get(DAYS[date.weekday()], []):
+            brightness = int(window.get("brightness", 70))
+            try:
+                on_m, on_h = _hh_mm(window.get("onTime", "08:00"))
+                off_m, off_h = _hh_mm(window.get("offTime", "22:00"))
+            except (ValueError, AttributeError):
+                continue
+            for stamp, on, level in (
+                (datetime.datetime.combine(date, datetime.time(on_h, on_m)), True, brightness),
+                (datetime.datetime.combine(date, datetime.time(off_h, off_m)), False, 0),
+            ):
+                if stamp <= now and (latest is None or stamp > latest[0]):
+                    latest = (stamp, on, level)
+
+    if latest is None:
+        return None
+    return latest[1], latest[2]
+
+
+def expected_pump_run(schedule, now=None):
+    """Seconds still owed to a pump run that should be under way at ``now``.
+
+    Returns ``None`` when no run is in progress. Reported rather than acted on
+    automatically: a service that crash-loops would otherwise restart the pump
+    on every boot, and a missed run self-heals at the next scheduled one.
+    """
+    now = now or datetime.datetime.now()
+    schedule = normalize_schedule(schedule)
+    days = _effective_days(schedule, "pump", now)
+    if days is None:
+        return None
+
+    for delta in (0, 1):  # today, and yesterday for a run spanning midnight
+        date = (now - datetime.timedelta(days=delta)).date()
+        for run in days.get(DAYS[date.weekday()], []):
+            try:
+                run_m, run_h = _hh_mm(run.get("time", "12:00"))
+                seconds = _pump_seconds(run.get("duration", 5))
+            except (ValueError, AttributeError, TypeError):
+                continue
+            start = datetime.datetime.combine(date, datetime.time(run_h, run_m))
+            remaining = (start + datetime.timedelta(seconds=seconds) - now).total_seconds()
+            if 0 < remaining <= seconds:
+                return int(remaining)
+    return None
+
+
+def next_pump_run(schedule, now=None, lookahead_days=8):
+    """When the next scheduled pump run starts, as a naive local datetime.
+
+    Returns None when the pump schedule is disabled or has no runs. This exists
+    because the writable "Pump Run Time" entity can only express a single run per
+    day: on a multi-cycle schedule it shows the first run and never moves, so a
+    dashboard reading it appears frozen.
+    """
+    now = now or datetime.datetime.now()
+    schedule = normalize_schedule(schedule)
+    days = _effective_days(schedule, "pump", now)
+    if days is None:
+        return None
+
+    for delta in range(lookahead_days):
+        date = (now + datetime.timedelta(days=delta)).date()
+        soonest = None
+        for run in days.get(DAYS[date.weekday()], []):
+            try:
+                run_m, run_h = _hh_mm(run.get("time", "12:00"))
+            except (ValueError, AttributeError):
+                continue
+            start = datetime.datetime.combine(date, datetime.time(run_h, run_m))
+            if start > now and (soonest is None or start < soonest):
+                soonest = start
+        if soonest is not None:
+            return soonest
+    return None
+
+
 def apply_schedule(schedule):
     """Persist the schedule and replace our crontab entries with its compiled form."""
     # Validate/compile first so a bad schedule never touches crontab.

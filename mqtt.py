@@ -16,7 +16,7 @@ from gpiozero import Button  # Import gpiozero Button
 
 from app.lib import grow as grow_lib
 from app.lib import state as state_lib
-from app.lib.hardware import detect_model, get_pin_factory
+from app.lib.hardware import current_duty_fraction, detect_model, get_pin_factory
 from app.lib.logging_config import configure_logging
 from app.lib.water import gallons_remaining, is_water_low
 from app.sensors.camera import camera as camera_mod
@@ -29,6 +29,7 @@ from app.sensors.pump.routes import pump_control
 from app.sensors.schedule import schedule as sched_lib
 from app.sensors.temperature.temperature import temperature_sensor
 from config import (
+    ACTUATOR_POLL_SECONDS,
     BASE_TOPIC,
     BROKER,
     BUTTON_PIN,
@@ -755,6 +756,20 @@ def send_discovery_messages(client):
             "device": device_info,
         },
     )
+    # Read-only companion to the writable "Pump Run Time" entity, which can only
+    # express one run per day and so sits frozen on the first of a multi-cycle
+    # schedule. device_class timestamp lets HA render it as "in 2 hours".
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_next_run/config",
+        {
+            "name": "Next Pump Run",
+            "unique_id": IDENTIFIER + "_pump_next_run",
+            "state_topic": BASE_TOPIC + "/schedule/pump/next",
+            "device_class": "timestamp",
+            "icon": "mdi:clock-fast",
+            "device": device_info,
+        },
+    )
     pub(
         f"homeassistant/button/gardyn/{IDENTIFIER}_grow_start/config",
         {
@@ -936,6 +951,24 @@ def publish_schedule_state(client):
         )
     except Exception:
         logger.exception("Error publishing schedule state")
+    publish_next_pump_run(client)
+
+
+def _next_pump_payload():
+    """The next scheduled pump run as ISO 8601 with a UTC offset, which is what
+    Home Assistant's timestamp device_class needs to render a relative time
+    ("in 2 hours"). "unavailable" when the pump schedule is off or empty."""
+    try:
+        upcoming = sched_lib.next_pump_run(sched_lib.load_schedule())
+    except Exception:
+        logger.exception("Error computing the next pump run")
+        return "unavailable"
+    return upcoming.astimezone().isoformat() if upcoming else "unavailable"
+
+
+def publish_next_pump_run(client):
+    """Publish when the next scheduled pump run starts."""
+    client.publish(BASE_TOPIC + "/schedule/pump/next", _next_pump_payload(), retain=True)
 
 
 def _apply_schedule(client, schedule):
@@ -1316,6 +1349,135 @@ def restore_actuator_state(client):
         logger.error("Failed to restore actuator state: %s", exc)
 
 
+def reconcile_actuator_state(client):
+    """Republish the actuators' real duty cycles on a timer.
+
+    cron, the REST API, the CLI and the physical button all drive the hardware
+    without passing through this service, so a service that only publishes what
+    it commanded drifts: Home Assistant showed the light OFF while it was on at
+    65%, and the pump OFF through a scheduled run. gpiozero reads PWM duty back
+    through pigpiod, so polling reports the truth whoever made the change.
+
+    The duty cycles are read straight from pigpiod (silently) and only a change
+    triggers a publish, so this neither spams the broker nor the log. It also
+    refreshes the persisted actuator state, which the cron path never touches --
+    that stale file is why power-loss recovery could not restore a scheduled
+    light.
+    """
+    global light_state, pump_state, brightness, speed
+    interval = ACTUATOR_POLL_SECONDS
+    if not interval:
+        logger.info("Actuator polling disabled (ACTUATOR_POLL_SECONDS=0)")
+        return
+
+    last = None
+    last_next_run = None
+    while True:
+        try:
+            # The next-run sensor has to advance once a run has passed. It changes
+            # only a handful of times a day, so publish it only when it moves.
+            upcoming = _next_pump_payload()
+            if upcoming != last_next_run:
+                client.publish(BASE_TOPIC + "/schedule/pump/next", upcoming, retain=True)
+                last_next_run = upcoming
+
+            light_pct = _live_duty_percent(light)
+            pump_pct = _live_duty_percent(pump)
+            snapshot = (light_pct, pump_pct)
+            if None not in snapshot and snapshot != last:
+                # Published straight from the polled percentages rather than via a
+                # helper that re-reads the pins, so this needs nothing beyond the
+                # topics the light/pump discovery already declares.
+                client.publish(
+                    BASE_TOPIC + "/light/state", "ON" if light_pct > 0 else "OFF", retain=True
+                )
+                client.publish(BASE_TOPIC + "/light/brightness/state", str(light_pct), retain=True)
+                client.publish(
+                    BASE_TOPIC + "/pump/state", "ON" if pump_pct > 0 else "OFF", retain=True
+                )
+                client.publish(BASE_TOPIC + "/pump/speed/state", str(pump_pct), retain=True)
+                logger.info(
+                    "Actuator state: light %s at %s%%, pump %s at %s%%",
+                    "ON" if light_pct > 0 else "OFF",
+                    light_pct,
+                    "ON" if pump_pct > 0 else "OFF",
+                    pump_pct,
+                )
+                light_state = light_pct > 0
+                pump_state = pump_pct > 0
+                if light_pct > 0:
+                    brightness = light_pct
+                if pump_pct > 0:
+                    speed = pump_pct
+                state_lib.save_state(
+                    light_on=light_state,
+                    brightness=brightness,
+                    pump_on=pump_state,
+                    speed=speed,
+                )
+                last = snapshot
+        except Exception:
+            logger.exception("Error reconciling actuator state")
+        sleep(interval)
+
+
+def _live_duty_percent(driver):
+    """A driver's current duty cycle as a whole percent, read from pigpiod.
+
+    Deliberately silent -- the drivers' own getters log on every call, which at
+    poll frequency would bury the log. Returns None when it cannot be read.
+    """
+    fraction = current_duty_fraction(getattr(driver.gpio, "pi", None), driver.pin, default=None)
+    return None if fraction is None else int(round(fraction * 100))
+
+
+def apply_scheduled_state(client):
+    """Bring the light in line with what the schedule says should be on now.
+
+    Cron drives the actuators through the ``light``/``water`` CLIs, which never
+    touch the persisted actuator state, so ``restore_actuator_state`` can only
+    ever recover a state some MQTT/HA action last wrote. After a power cut in the
+    middle of a photoperiod that leaves the tower dark until the next scheduled
+    on-time -- up to a full day. Replaying the schedule's current expectation on
+    startup closes that gap, and runs after the saved-state restore so the
+    schedule wins over a stale value.
+
+    The pump is reported but deliberately not started: this runs on every
+    connect, and a service that crash-loops would otherwise re-trigger watering
+    each time, whereas a missed run self-heals at the next scheduled one.
+    """
+    global light_state, brightness
+    try:
+        schedule = sched_lib.load_schedule()
+        expected = sched_lib.expected_light_state(schedule)
+        if expected is None:
+            logger.info("Schedule has no light opinion; leaving the light as-is")
+        else:
+            should_be_on, level = expected
+            if should_be_on:
+                light_state = True
+                brightness = level
+                light.set_duty_cycle(level)
+                client.publish(BASE_TOPIC + "/light/state", "ON")
+                client.publish(BASE_TOPIC + "/light/brightness", str(level))
+            else:
+                light_state = False
+                light.off()
+                client.publish(BASE_TOPIC + "/light/state", "OFF")
+            state_lib.save_state(light_on=light_state, brightness=brightness)
+            logger.info("Applied scheduled light state: on=%s brightness=%s", should_be_on, level)
+
+        owed = sched_lib.expected_pump_run(schedule)
+        if owed:
+            logger.warning(
+                "A scheduled pump run has %ss left; not auto-starting it. "
+                "Next scheduled run will proceed normally.",
+                owed,
+            )
+    except Exception:
+        logger.exception("Error applying scheduled state")
+
+
 def publish_grow_reminders(client):
     """Publish grow stage and any due reminders (thinning/root/harvest/nutrient)."""
     while True:
@@ -1394,10 +1556,17 @@ if __name__ == "__main__":
     grow_thread.daemon = True
     grow_thread.start()
 
-    # Restore last known actuator state after (re)connect.
+    actuator_thread = threading.Thread(target=reconcile_actuator_state, args=(client,))
+    actuator_thread.daemon = True
+    actuator_thread.start()
+
+    # Restore last known actuator state after (re)connect, then let the schedule
+    # override it -- cron-driven changes never reach the persisted state, so the
+    # schedule is the more trustworthy source for what should be on right now.
     client.on_connect = lambda c, u, f, rc, properties=None: (
         on_connect(c, u, f, rc, properties),
         restore_actuator_state(c),
+        apply_scheduled_state(c),
     )
 
     client.loop_forever()
