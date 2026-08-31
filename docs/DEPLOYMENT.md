@@ -35,12 +35,51 @@ pump effectively unusable from Home Assistant:
    dry-run protection the power button enforces. Because (1) and (2) make the
    button appear broken, the slider is exactly what a user reaches for.
 
-The fix is on `feat/gardyn-tower-local` (PR #1 on this fork). The same work is
-proposed upstream as `iot-root/garden-of-eden#95`; if that merges, this branch
-can rebase onto it with no divergence.
+The fix is on `feat/gardyn-tower-local`, this fork's build branch (see
+[Branch model](#branch-model)). The same work is proposed upstream as
+`iot-root/garden-of-eden#95`; if that merges, this branch can rebase onto it
+with no divergence.
 
 **The Pi must not track `iot-root` `main` directly** — doing so silently
 reintroduces all three defects.
+
+## Branch model
+
+Two branches, with deliberately different jobs. Getting these confused is the
+single easiest way to break a running tower.
+
+| Branch | Role |
+|---|---|
+| `feat/gardyn-tower-local` | **The build.** Everything the towers actually run. The Pi deploys from here and nothing else. |
+| `main` | **A mirror of upstream `iot-root/main`.** Never carries fork work, so it always answers "what does upstream have?" |
+
+Remotes follow the standard convention: `origin` is this fork, `upstream` is
+`iot-root`. They were once reversed, which made a reflexive `git push` aim at
+upstream.
+
+Keeping `main` a pure mirror is what makes comparison possible. Fork work is
+never merged into it — that is why the tower branch is a long-lived branch rather
+than something that lands on `main`.
+
+```bash
+# Refresh the mirror. --ff-only guarantees main can never diverge; if this
+# refuses to fast-forward, something has been committed to main by mistake.
+git fetch upstream
+git checkout main && git merge --ff-only upstream/main && git push origin main
+
+# What is ours that upstream does not have:
+git log --oneline main..feat/gardyn-tower-local
+
+# What upstream has that the build does not:
+git log --oneline feat/gardyn-tower-local..main
+
+# Take upstream's changes into the build (review the diff above first):
+git checkout feat/gardyn-tower-local && git merge main
+```
+
+Upstream merging one of this fork's PRs will bring the same content back under
+different commit hashes, so expect the occasional trivial conflict where content
+matches but history does not. Resolve in favour of the build branch and move on.
 
 ## Water sensor: what the numbers mean
 
@@ -107,12 +146,21 @@ injects fake GPIO modules *only when the real libraries are absent*, so on the P
 the tests import real `gpiozero` and seize live hardware.
 
 ```bash
-python3 -m venv ~/gv && ~/gv/bin/pip install -r requirements-dev.txt
-~/gv/bin/python -m unittest discover -t . -s tests -p 'test_*.py'   # 126 tests
-~/gv/bin/ruff check . && ~/gv/bin/black --check .
+python3 -m venv ~/gedev && ~/gedev/bin/pip install -r requirements-dev.txt
+~/gedev/bin/python -m unittest discover -t . -s tests -p 'test_*.py'
+~/gedev/bin/ruff check . && ~/gedev/bin/black --check .
 ```
 
-CI gates on all three.
+CI gates on all three. Expect **177 tests** on this branch and **126** on a
+branch cut from upstream `main` — the difference is this fork's own coverage, so
+a lower count is a hint that something did not merge, not that tests vanished.
+
+Do not put the venv in `/tmp`: WSL clears it between sessions.
+
+**`app/__init__.py` imports every sensor blueprint at module level**, so even
+importing `app.lib.grow` constructs the GPIO drivers. That is why the suite must
+not run on the Pi — it is not a theoretical hazard, it seizes the live pins on a
+tower with plants in it.
 
 ## Updating the Pi
 
@@ -125,13 +173,24 @@ effect until copied into place.
 ```bash
 cd ~/garden-of-eden
 tar czf ~/gardyn-backup-$(date +%Y%m%d-%H%M%S).tar.gz --exclude=venv --exclude=.git .
-git fetch fork && git reset --hard fork/feat/gardyn-tower-local
+git fetch origin && git reset --hard origin/feat/gardyn-tower-local
 venv/bin/pip install -r requirements.txt
-sudo systemctl restart mqtt.service
+sudo systemctl restart mqtt.service garden-api.service
 ```
 
-Then confirm: `systemctl is-active mqtt.service`, and check the journal for
-`Connected with result code Success` plus the absence of tracebacks.
+Two services run, not one: `mqtt.service` (Home Assistant) and
+`garden-api.service` (REST API + built-in web UI on `:5000`, served by waitress).
+Restart both — a stale API process keeps serving the previous UI.
+
+Then confirm: `systemctl is-active mqtt.service garden-api.service`, and check the
+journal for `Connected with result code Success` plus the absence of tracebacks.
+
+Restarting is now safe for the actuators. It was not before: constructing a
+driver used to write 0 to its pin, so every API restart switched the lights and
+pump off mid-photoperiod, silently overriding cron. Verify with
+`pigs gdc 18` (light) and `pigs gdc 24` (pump) — those read the true duty cycle
+straight from pigpiod, in units of 1/10000, so `6500` is 65%. They are the only
+trustworthy source when the dashboard and HA disagree.
 
 ## Verifying the unit
 
