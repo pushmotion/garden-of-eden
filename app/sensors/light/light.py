@@ -7,6 +7,7 @@ from gpiozero import PWMLED
 from gpiozero.pins.pigpio import PiGPIOFactory
 
 import config
+from app.lib import hardware
 
 
 class GPIOController:
@@ -36,8 +37,13 @@ class Light:
         # Note: for docker: PiGPIOFactory(host='pigpiod', port=8888)
         self.pin = pin
         self.pin_factory = pin_factory if pin_factory else PiGPIOFactory()
-        self.led = PWMLED(self.pin, pin_factory=self.pin_factory)
+        # Open the pigpio client first so the pin's live duty cycle can be read
+        # and handed to PWMLED as its initial value. Without that, constructing
+        # this driver writes 0 and switches the light off -- which happened on
+        # every start of the REST API, undoing the cron schedule.
         self.gpio = GPIOController(pin, pin_factory)
+        initial = hardware.current_duty_fraction(getattr(self.gpio, "pi", None), pin)
+        self.led = PWMLED(self.pin, pin_factory=self.pin_factory, initial_value=initial)
         self.set_frequency(frequency)
 
     def on(self):
