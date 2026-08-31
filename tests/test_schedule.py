@@ -238,3 +238,76 @@ class ExpectedStateTestCase(unittest.TestCase):
         s = self._daily(runs=[{"time": "01:00", "duration": 3}])
         s["vacation"] = {"enabled": True, "until": None}
         self.assertEqual(sched.next_pump_run(s, now=self._at(9)), self._at(12))
+
+    def test_next_light_change_finds_the_upcoming_off(self):
+        s = self._daily([{"onTime": "05:00", "offTime": "21:00", "brightness": 65}])
+        self.assertEqual(sched.next_light_change(s, now=self._at(9)), (self._at(21), False, 0))
+
+    def test_next_light_change_finds_the_upcoming_on(self):
+        s = self._daily([{"onTime": "05:00", "offTime": "21:00", "brightness": 65}])
+        self.assertEqual(
+            sched.next_light_change(s, now=self._at(22)),
+            (self._at(5, day=1).replace(month=9), True, 65),
+        )
+
+    def test_next_light_change_none_when_disabled(self):
+        self.assertIsNone(sched.next_light_change(self._daily(lights=False), now=self._at(9)))
+
+
+class ScheduleEndpointTestCase(unittest.TestCase):
+    """The derived-state and dry-run routes (issue #32)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from app import create_app
+
+        cls.client = create_app("default").test_client()
+
+    def test_state_reports_light_and_pump(self):
+        body = self.client.get("/schedule/state").get_json()
+        self.assertIn("now", body)
+        self.assertIn("vacation", body)
+        self.assertIn("pump", body)
+        self.assertIn("running", body["pump"])
+
+    def test_next_reports_both_actuators(self):
+        body = self.client.get("/schedule/next").get_json()
+        self.assertIn("light", body)
+        self.assertIn("pump", body)
+
+    def test_validate_compiles_without_applying(self):
+        payload = {
+            "lights": {
+                "enabled": True,
+                "days": {
+                    d: [{"onTime": "05:00", "offTime": "21:00", "brightness": 65}]
+                    for d in sched.DAYS
+                },
+            },
+            "pump": {
+                "enabled": True,
+                "days": {d: [{"time": "09:00", "duration": 3}] for d in sched.DAYS},
+            },
+        }
+        body = self.client.post("/schedule/validate", json=payload).get_json()
+        self.assertTrue(body["valid"])
+        # 7 days x (light on + light off + one pump run)
+        self.assertEqual(body["count"], 21)
+        self.assertTrue(any("/usr/local/bin/light 65" in ln for ln in body["cron_lines"]))
+
+    def test_validate_rejects_a_bad_time(self):
+        payload = {
+            "lights": {"enabled": True, "days": {"mon": [{"onTime": "99:00"}]}},
+            "pump": {"enabled": False},
+        }
+        resp = self.client.post("/schedule/validate", json=payload)
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.get_json()["valid"])
+
+    def test_validate_rejects_a_non_object(self):
+        self.assertEqual(self.client.post("/schedule/validate", json=[]).status_code, 400)
+
+    def test_installed_cron_is_listable(self):
+        body = self.client.get("/schedule/cron").get_json()
+        self.assertIn("count", body)
+        self.assertIsInstance(body["cron_lines"], list)

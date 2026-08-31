@@ -308,6 +308,49 @@ def expected_pump_run(schedule, now=None):
     return None
 
 
+def next_light_change(schedule, now=None, lookahead_days=8):
+    """The next light transition after ``now`` as ``(when, on, brightness)``.
+
+    The mirror of expected_light_state, which looks backwards: this walks forward
+    to the soonest on/off event, so a caller can say "on at 65% until 21:00".
+    Returns None when the light schedule is disabled or has no windows.
+    """
+    now = now or datetime.datetime.now()
+    schedule = normalize_schedule(schedule)
+    days = _effective_days(schedule, "lights", now)
+    if days is None:
+        return None
+
+    for delta in range(lookahead_days):
+        date = (now + datetime.timedelta(days=delta)).date()
+        soonest = None
+        for window in days.get(DAYS[date.weekday()], []):
+            brightness = int(window.get("brightness", 70))
+            try:
+                on_m, on_h = _hh_mm(window.get("onTime", "08:00"))
+                off_m, off_h = _hh_mm(window.get("offTime", "22:00"))
+            except (ValueError, AttributeError):
+                continue
+            for stamp, on, level in (
+                (datetime.datetime.combine(date, datetime.time(on_h, on_m)), True, brightness),
+                (datetime.datetime.combine(date, datetime.time(off_h, off_m)), False, 0),
+            ):
+                if stamp > now and (soonest is None or stamp < soonest[0]):
+                    soonest = (stamp, on, level)
+        if soonest is not None:
+            return soonest
+    return None
+
+
+def installed_cron_lines():
+    """The marked cron lines currently installed -- i.e. what will actually run.
+
+    Reads the live crontab rather than recompiling the saved schedule, so a
+    client can verify the two agree. Returns [] when crontab is unavailable.
+    """
+    return [line for line in _read_crontab() if CRON_MARKER in line]
+
+
 def next_pump_run(schedule, now=None, lookahead_days=8):
     """When the next scheduled pump run starts, as a naive local datetime.
 
