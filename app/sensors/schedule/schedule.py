@@ -34,6 +34,11 @@ from app.lib.persist import write_json_atomic
 logger = logging.getLogger(__name__)
 
 CRON_MARKER = "# garden-of-eden"
+# One-shot pump runs live under their own marker so apply_schedule() never
+# rewrites or removes them, and so a one-off can never be mistaken for part of
+# the recurring schedule. Note it *contains* CRON_MARKER, so every filter on the
+# recurring marker has to exclude this one explicitly.
+ONCE_MARKER = "# garden-of-eden-once"
 LIGHT_CMD = "/usr/local/bin/light"
 WATER_CMD = "/usr/local/bin/water"
 
@@ -348,7 +353,7 @@ def installed_cron_lines():
     Reads the live crontab rather than recompiling the saved schedule, so a
     client can verify the two agree. Returns [] when crontab is unavailable.
     """
-    return [line for line in _read_crontab() if CRON_MARKER in line]
+    return [line for line in _read_crontab() if CRON_MARKER in line and ONCE_MARKER not in line]
 
 
 def next_pump_run(schedule, now=None, lookahead_days=8):
@@ -388,7 +393,9 @@ def apply_schedule(schedule):
     cron_lines = build_cron_lines(schedule)
     save_schedule(schedule)
 
-    existing = [ln for ln in _read_crontab() if CRON_MARKER not in ln]
+    # Keep foreign lines, and keep one-shot runs: adding or applying a recurring
+    # schedule must never cancel a pending one-off.
+    existing = [ln for ln in _read_crontab() if CRON_MARKER not in ln or ONCE_MARKER in ln]
     _write_crontab(existing + cron_lines)
     logger.info("Applied schedule with %d cron entries", len(cron_lines))
     return schedule
@@ -404,4 +411,126 @@ def refresh():
         vacation["enabled"] = False
         schedule["vacation"] = vacation
         logger.info("Vacation mode expired; reverting to the normal schedule")
-    return apply_schedule(schedule)
+    applied = apply_schedule(schedule)
+    # A dated one-shot entry carries no year, so a spent one would fire again in
+    # twelve months. This nightly pass is where they get cleaned up.
+    prune_one_time_pump_runs()
+    return applied
+
+
+# --- One-shot pump runs -------------------------------------------------------
+# A dated cron entry ("M H D Mon *") fires on a specific day, which is how a
+# single run survives a reboot without a daemon holding a timer. Cron has no
+# concept of "once", though, so the entry would fire again next year: each line
+# carries its full ISO timestamp after the marker, and prune_one_time_pump_runs()
+# drops the ones that have passed.
+
+
+def _parse_once_line(line):
+    """Extract ``(when, seconds)`` from a one-shot cron line, or None."""
+    if ONCE_MARKER not in line:
+        return None
+    head, _, tail = line.partition(ONCE_MARKER)
+    stamp = tail.split()[0] if tail.split() else ""
+    try:
+        when = datetime.datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    fields = head.split()
+    try:
+        # M H D Mon DOW CMD SECONDS
+        seconds = int(fields[6])
+    except (IndexError, ValueError):
+        return None
+    return when, seconds
+
+
+def next_occurrence(hhmm, now=None):
+    """The next datetime matching ``"HH:MM"`` -- today if still ahead, else tomorrow."""
+    now = now or datetime.datetime.now()
+    minute, hour = _hh_mm(hhmm)
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += datetime.timedelta(days=1)
+    return candidate
+
+
+def one_time_pump_runs(now=None):
+    """Pending one-shot pump runs, soonest first. Expired entries are excluded."""
+    now = now or datetime.datetime.now()
+    runs = []
+    for line in _read_crontab():
+        parsed = _parse_once_line(line)
+        if parsed and parsed[0] > now:
+            runs.append({"at": parsed[0], "seconds": parsed[1]})
+    return sorted(runs, key=lambda run: run["at"])
+
+
+def prune_one_time_pump_runs(now=None, write=True):
+    """Drop one-shot lines whose time has passed; returns the lines to keep.
+
+    ``write=False`` computes the survivors without touching crontab, so a caller
+    that is about to write anyway does not need two passes.
+    """
+    now = now or datetime.datetime.now()
+    lines = _read_crontab()
+    if not lines:
+        # crontab unreadable (or genuinely empty) -- never write [] over it.
+        return []
+    kept = []
+    for line in lines:
+        parsed = _parse_once_line(line)
+        if parsed and parsed[0] <= now:
+            logger.info("Pruning expired one-time pump run: %s", parsed[0].isoformat())
+            continue
+        kept.append(line)
+    if write and len(kept) != len(lines):
+        _write_crontab(kept)
+    return kept
+
+
+def add_one_time_pump_run(hhmm, duration_minutes, now=None):
+    """Install one dated cron entry for a single pump run.
+
+    Deliberately does **not** go through apply_schedule(): adding a one-off must
+    never rewrite the recurring schedule. Duration is clamped by the same
+    MAX_PUMP_RUN_SECONDS cap as every other path.
+    """
+    when = next_occurrence(hhmm, now)
+    seconds = _pump_seconds(duration_minutes)
+    line = (
+        f"{when.minute} {when.hour} {when.day} {when.month} * "
+        f"{WATER_CMD} {seconds} {ONCE_MARKER} {when.isoformat()}"
+    )
+    kept = prune_one_time_pump_runs(now=now, write=False)
+    _write_crontab(kept + [line])
+    logger.info("Scheduled a one-time pump run at %s for %ss", when.isoformat(), seconds)
+    return {"at": when, "seconds": seconds}
+
+
+def clear_one_time_pump_runs():
+    """Remove every pending one-shot run. Returns how many lines were removed."""
+    lines = _read_crontab()
+    if not lines:
+        return 0
+    kept = [line for line in lines if ONCE_MARKER not in line]
+    removed = len(lines) - len(kept)
+    if removed:
+        _write_crontab(kept)
+    return removed
+
+
+def default_pump_duration(schedule=None):
+    """Duration (minutes) to use for a run when the caller does not specify one.
+
+    The shortest run already in the schedule, so a one-off inherits the rhythm
+    the tower is already on rather than a hardcoded guess. Falls back to 3.
+    """
+    schedule = normalize_schedule(schedule or load_schedule())
+    durations = [
+        int(run.get("duration", 0))
+        for day in DAYS
+        for run in schedule["pump"]["days"].get(day, [])
+        if int(run.get("duration", 0)) > 0
+    ]
+    return min(durations) if durations else 3
