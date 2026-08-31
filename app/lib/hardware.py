@@ -53,6 +53,35 @@ def get_pin_factory():
     return _pin_factory
 
 
+def current_duty_fraction(pi, pin, default=0):
+    """Read ``pin``'s live PWM duty cycle from pigpiod as a 0..1 fraction.
+
+    ``PWMLED(pin)`` defaults to ``initial_value=0``, so merely constructing a
+    driver writes zero to the pin. Because the route modules instantiate their
+    drivers at import, every start of the REST API used to switch the lights and
+    pump off -- silently undoing whatever the cron schedule had set. Passing this
+    value as ``initial_value`` makes construction observe the pin instead of
+    resetting it. ``initial_value=None`` is not usable here: gpiozero's PWMLED
+    range-checks it and raises TypeError.
+
+    Returns ``default`` when the pin is not in PWM mode or pigpio is unavailable,
+    which is also the off-Pi path.
+    """
+    if pi is None:
+        return default
+    try:
+        duty = pi.get_PWM_dutycycle(pin)
+        span = pi.get_PWM_range(pin)
+    except Exception as exc:  # noqa: BLE001 - any pigpio error means "unknown"
+        logger.debug("Could not read PWM duty for pin %s: %s", pin, exc)
+        return default
+    try:
+        fraction = float(duty) / float(span)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return default
+    return min(1.0, max(0.0, fraction))
+
+
 def i2c_device_present(address):
     """Return True if an I2C device ACKs at ``address`` on bus 1."""
     try:

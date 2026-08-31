@@ -44,5 +44,46 @@ class SystemRouteTestCase(unittest.TestCase):
         self.assertEqual(body["profile"], config.MODELS["gardyn 3.0"])
 
 
+class CurrentDutyFractionTestCase(unittest.TestCase):
+    """Constructing a driver must observe the pin, not reset it.
+
+    PWMLED defaults to initial_value=0, so before this helper existed every
+    start of the REST API wrote 0 to the light and pump pins and undid whatever
+    the cron schedule had set.
+    """
+
+    class _Pi:
+        def __init__(self, duty, span):
+            self._duty, self._span = duty, span
+
+        def get_PWM_dutycycle(self, _pin):
+            if isinstance(self._duty, Exception):
+                raise self._duty
+            return self._duty
+
+        def get_PWM_range(self, _pin):
+            return self._span
+
+    def test_reads_live_duty_as_a_fraction(self):
+        self.assertAlmostEqual(hardware.current_duty_fraction(self._Pi(6500, 10000), 18), 0.65)
+
+    def test_off_pin_reads_zero(self):
+        self.assertEqual(hardware.current_duty_fraction(self._Pi(0, 10000), 18), 0)
+
+    def test_no_pigpio_client_falls_back(self):
+        self.assertEqual(hardware.current_duty_fraction(None, 18), 0)
+        self.assertEqual(hardware.current_duty_fraction(None, 18, default=1), 1)
+
+    def test_pin_not_in_pwm_mode_falls_back(self):
+        pi = self._Pi(Exception("GPIO not set up for PWM"), 10000)
+        self.assertEqual(hardware.current_duty_fraction(pi, 18), 0)
+
+    def test_zero_range_falls_back(self):
+        self.assertEqual(hardware.current_duty_fraction(self._Pi(100, 0), 18), 0)
+
+    def test_result_is_clamped(self):
+        self.assertEqual(hardware.current_duty_fraction(self._Pi(20000, 10000), 18), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
