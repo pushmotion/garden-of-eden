@@ -595,6 +595,20 @@ def send_discovery_messages(client):
             "device": device_info,
         },
     )
+    # Read-only companion to the writable "Pump Run Time" entity, which can only
+    # express one run per day and so sits frozen on the first of a multi-cycle
+    # schedule. device_class timestamp lets HA render it as "in 2 hours".
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_next_run/config",
+        {
+            "name": "Next Pump Run",
+            "unique_id": IDENTIFIER + "_pump_next_run",
+            "state_topic": BASE_TOPIC + "/schedule/pump/next",
+            "device_class": "timestamp",
+            "icon": "mdi:clock-fast",
+            "device": device_info,
+        },
+    )
     pub(
         f"homeassistant/button/gardyn/{IDENTIFIER}_grow_start/config",
         {
@@ -776,6 +790,24 @@ def publish_schedule_state(client):
         )
     except Exception:
         logger.exception("Error publishing schedule state")
+    publish_next_pump_run(client)
+
+
+def _next_pump_payload():
+    """The next scheduled pump run as ISO 8601 with a UTC offset, which is what
+    Home Assistant's timestamp device_class needs to render a relative time
+    ("in 2 hours"). "unavailable" when the pump schedule is off or empty."""
+    try:
+        upcoming = sched_lib.next_pump_run(sched_lib.load_schedule())
+    except Exception:
+        logger.exception("Error computing the next pump run")
+        return "unavailable"
+    return upcoming.astimezone().isoformat() if upcoming else "unavailable"
+
+
+def publish_next_pump_run(client):
+    """Publish when the next scheduled pump run starts."""
+    client.publish(BASE_TOPIC + "/schedule/pump/next", _next_pump_payload(), retain=True)
 
 
 def _apply_schedule(client, schedule):
@@ -1127,8 +1159,16 @@ def reconcile_actuator_state(client):
         return
 
     last = None
+    last_next_run = None
     while True:
         try:
+            # The next-run sensor has to advance once a run has passed. It changes
+            # only a handful of times a day, so publish it only when it moves.
+            upcoming = _next_pump_payload()
+            if upcoming != last_next_run:
+                client.publish(BASE_TOPIC + "/schedule/pump/next", upcoming, retain=True)
+                last_next_run = upcoming
+
             light_pct = _live_duty_percent(light)
             pump_pct = _live_duty_percent(pump)
             snapshot = (light_pct, pump_pct)
