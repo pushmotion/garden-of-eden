@@ -123,6 +123,73 @@ class MqttControlTestCase(unittest.TestCase):
         self.assertEqual(mon["onTime"], "23:00")
         self.assertEqual(mon["brightness"], 60)
 
+    # --- a scalar from HA must never collapse a multi-window/multi-run day ---
+    # These setters describe one window/run, but the schedule they edit can hold
+    # several a day. Both used to write their single value over all seven days,
+    # silently discarding the rest; each of the four is now surgical.
+    def _save_two_windows_and_runs(self):
+        self.mqtt.sched_lib.save_schedule(
+            {
+                "lights": {
+                    "enabled": True,
+                    "days": {
+                        "mon": [
+                            {"onTime": "05:00", "offTime": "11:00", "brightness": 65},
+                            {"onTime": "15:00", "offTime": "21:00", "brightness": 40},
+                        ]
+                    },
+                },
+                "pump": {
+                    "enabled": True,
+                    "days": {
+                        "mon": [
+                            {"time": "06:00", "duration": 3},
+                            {"time": "18:00", "duration": 3},
+                        ]
+                    },
+                },
+            }
+        )
+
+    def test_light_time_moves_only_the_first_window(self):
+        self._save_two_windows_and_runs()
+        self.send("schedule/lights/on/set", "04:00:00")
+
+        mon = self.mqtt.sched_lib.load_schedule()["lights"]["days"]["mon"]
+        self.assertEqual(len(mon), 2, "the second window must survive")
+        self.assertEqual(mon[0]["onTime"], "04:00")
+        self.assertEqual(mon[0]["offTime"], "11:00", "the first window keeps its off time")
+        self.assertEqual(mon[1], {"onTime": "15:00", "offTime": "21:00", "brightness": 40})
+
+    def test_light_brightness_applies_to_every_window(self):
+        self._save_two_windows_and_runs()
+        self.send("schedule/lights/brightness/set", "80")
+
+        mon = self.mqtt.sched_lib.load_schedule()["lights"]["days"]["mon"]
+        self.assertEqual(len(mon), 2)
+        self.assertEqual([w["brightness"] for w in mon], [80, 80])
+        # Times are a property of each window and must be left alone.
+        self.assertEqual([w["onTime"] for w in mon], ["05:00", "15:00"])
+        self.assertEqual([w["offTime"] for w in mon], ["11:00", "21:00"])
+
+    def test_pump_time_moves_only_the_first_run(self):
+        self._save_two_windows_and_runs()
+        self.send("schedule/pump/time/set", "01:00:00")
+
+        mon = self.mqtt.sched_lib.load_schedule()["pump"]["days"]["mon"]
+        self.assertEqual(len(mon), 2, "the second run must survive")
+        self.assertEqual(mon[0]["time"], "01:00")
+        self.assertEqual(mon[1], {"time": "18:00", "duration": 3})
+
+    def test_pump_duration_applies_to_every_run(self):
+        self._save_two_windows_and_runs()
+        self.send("schedule/pump/duration/set", "5")
+
+        mon = self.mqtt.sched_lib.load_schedule()["pump"]["days"]["mon"]
+        self.assertEqual(len(mon), 2)
+        self.assertEqual([r["duration"] for r in mon], [5, 5])
+        self.assertEqual([r["time"] for r in mon], ["06:00", "18:00"])
+
     # --- grow cycle ---
     def test_grow_stage_set(self):
         self.send("grow/stage/set", "thinning")
