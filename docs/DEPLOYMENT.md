@@ -209,6 +209,26 @@ reads `OK` or `PARTIAL: <what failed>`; `Last Refresh` carries the timestamp.
 **`bin/api-test.sh` spins the pump motor** (`control_pump 30`). Do not run it
 unless the pump is submerged.
 
+## Home Assistant dashboard
+
+**[`docs/homeassistant/pm-example.yaml`](homeassistant/pm-example.yaml) is the
+dashboard these towers use.** It is a Sections layout (HA 2024.3+) grouped by
+function — status first, then lighting, pump, one-time runs, environment,
+cameras, diagnostics. `lovelace-example.yaml` alongside it is the older plain
+card list, kept as a simpler starting point.
+
+Apply it via Settings → Dashboards → ⋮ → Edit → **Raw configuration editor**.
+That editor *replaces* the whole dashboard, so if the target dashboard already
+holds cards for anything else, paste the `views:` entry into your existing config
+instead of overwriting the file wholesale.
+
+Entity ids are built by HA as `<domain>.<device>_<entity name>`, where the device
+is named after `MQTT_BASETOPIC` (`gardyn`) — so the file says
+`sensor.gardyn_water_depth`. The two cameras are the exception: their discovery
+payloads set `object_id`, so they carry `MQTT_IDENTIFIER` (`gardyn_01`). If your
+base topic differs, one find/replace of `gardyn_` covers the file. Check anything
+uncertain in Developer Tools → States, filtered on `gardyn`.
+
 ## Scheduling
 
 2.0.0's schedule entities compile into the **Pi's crontab**, shelling out to
@@ -227,25 +247,42 @@ pump run at 12:00.
 
 | | |
 |---|---|
-| Lights | 05:00–21:00 daily at 50% (16 h photoperiod) |
-| Pump | 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 — 3 min each, 18 min/day |
+| Lights | 05:00–21:00 daily at 65% (16 h photoperiod) |
+| Pump | 01:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 — 3 min each, 21 min/day |
 | Default on-duty | `DEFAULT_BRIGHTNESS=50`, `DEFAULT_PUMP_SPEED=50` |
 
-That compiles to 56 marked crontab lines (14 light + 42 pump). `bin/water.sh`
-hardcodes `SPEED=50`, so scheduled pump runs are at 50% regardless of
-`DEFAULT_PUMP_SPEED` — the two happen to agree here.
+That compiles to 63 marked crontab lines (14 light + 49 pump). The 01:00 run is
+for overnight root-zone oxygen rather than moisture. `bin/water.sh` hardcodes
+`SPEED=50`, so scheduled pump runs are at 50% regardless of `DEFAULT_PUMP_SPEED`;
+the light schedule's 65% is a per-window value and is unrelated to
+`DEFAULT_BRIGHTNESS`, which only seeds the manual slider.
 
 **Timezone:** cron fires in the Pi's local zone, which is `America/New_York`
 (a region zone, not a fixed offset), with NTP active. Schedules therefore track
 daylight saving automatically and stay at 05:00/21:00 local year-round. Verify
 with `timedatectl` after any OS reinstall.
 
-The MQTT entities can only express **one** pump run per day, so Home Assistant's
-"pump time" shows `06:00` — the first of the six. The other five are real and in
-cron, but invisible to HA. **Changing the pump time or duration from the HA
-dashboard rewrites all seven days down to that single run**, discarding the other
-five. To keep multi-cycle watering, edit the schedule via `apply_schedule()` or
-`POST /schedule` instead, then restart `mqtt.service` so HA re-reads it.
+### What HA's scalar schedule controls can and cannot do
+
+The MQTT entities describe **one** window/run per day, so HA's "pump time" shows
+`01:00` — the first of the seven. The rest are real and in cron, but invisible to
+HA. All four setters therefore edit the saved schedule in place rather than
+replacing it:
+
+| Control | Effect |
+|---|---|
+| Brightness, Pump minutes | Applied to **every** existing window/run; count and times untouched |
+| Lights on/off, Pump run at | Moves only the **first** window/run of each day; later ones survive |
+
+Adding, removing or retiming the later windows/runs still needs
+`apply_schedule()`, `POST /schedule`, or the web UI heatmap, then a
+`mqtt.service` restart so HA re-reads it.
+
+Both pairs used to collapse the whole week down to their single value, silently
+discarding a multi-cycle schedule — the pump pair was fixed in `b05497e`, the
+light pair after it. Four regression tests in `tests/test_mqtt_control.py` build
+a two-window, two-run Monday and assert the second of each survives; keep them
+green if you touch these setters.
 
 ## Grow cycle
 
