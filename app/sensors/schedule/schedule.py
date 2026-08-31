@@ -308,6 +308,36 @@ def expected_pump_run(schedule, now=None):
     return None
 
 
+def next_pump_run(schedule, now=None, lookahead_days=8):
+    """When the next scheduled pump run starts, as a naive local datetime.
+
+    Returns None when the pump schedule is disabled or has no runs. This exists
+    because the writable "Pump Run Time" entity can only express a single run per
+    day: on a multi-cycle schedule it shows the first run and never moves, so a
+    dashboard reading it appears frozen.
+    """
+    now = now or datetime.datetime.now()
+    schedule = normalize_schedule(schedule)
+    days = _effective_days(schedule, "pump", now)
+    if days is None:
+        return None
+
+    for delta in range(lookahead_days):
+        date = (now + datetime.timedelta(days=delta)).date()
+        soonest = None
+        for run in days.get(DAYS[date.weekday()], []):
+            try:
+                run_m, run_h = _hh_mm(run.get("time", "12:00"))
+            except (ValueError, AttributeError):
+                continue
+            start = datetime.datetime.combine(date, datetime.time(run_h, run_m))
+            if start > now and (soonest is None or start < soonest):
+                soonest = start
+        if soonest is not None:
+            return soonest
+    return None
+
+
 def apply_schedule(schedule):
     """Persist the schedule and replace our crontab entries with its compiled form."""
     # Validate/compile first so a bad schedule never touches crontab.

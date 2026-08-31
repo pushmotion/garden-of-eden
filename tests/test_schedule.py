@@ -218,3 +218,23 @@ class ExpectedStateTestCase(unittest.TestCase):
     def test_pump_disabled_is_none(self):
         s = self._daily(runs=[{"time": "09:00", "duration": 3}], pump=False)
         self.assertIsNone(sched.expected_pump_run(s, now=self._at(9, 1)))
+
+    def test_next_pump_run_skips_runs_already_past(self):
+        runs = [{"time": h, "duration": 3} for h in ("01:00", "06:00", "09:00", "12:00")]
+        s = self._daily(runs=runs)
+        self.assertEqual(sched.next_pump_run(s, now=self._at(9, 17)), self._at(12))
+        self.assertEqual(sched.next_pump_run(s, now=self._at(0, 30)), self._at(1))
+
+    def test_next_pump_run_rolls_into_tomorrow(self):
+        s = self._daily(runs=[{"time": "01:00", "duration": 3}])
+        expected = datetime.datetime(2026, 9, 1, 1, 0)  # the Tuesday after our Monday
+        self.assertEqual(sched.next_pump_run(s, now=self._at(9)), expected)
+
+    def test_next_pump_run_none_when_disabled_or_empty(self):
+        self.assertIsNone(sched.next_pump_run(self._daily(runs=[], pump=False), now=self._at(9)))
+        self.assertIsNone(sched.next_pump_run(self._daily(runs=[]), now=self._at(9)))
+
+    def test_next_pump_run_uses_vacation_profile(self):
+        s = self._daily(runs=[{"time": "01:00", "duration": 3}])
+        s["vacation"] = {"enabled": True, "until": None}
+        self.assertEqual(sched.next_pump_run(s, now=self._at(9)), self._at(12))
