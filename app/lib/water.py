@@ -48,6 +48,12 @@ def is_reading_fresh(checked_at_iso, now, max_age_seconds):
 
     Unparseable or missing timestamps are *not* fresh, so a corrupt state file
     fails open (the pump still runs) rather than bricking watering.
+
+    ``now`` is naive local time. The service writes naive timestamps too, but an
+    offset-aware one (a hand-edited file, or some future writer) must not raise
+    -- subtracting mixed datetimes is a TypeError, and an exception here fails
+    *closed*, which is the one outcome this module exists to avoid. Aware values
+    are converted to local naive first.
     """
     if not checked_at_iso:
         return False
@@ -55,9 +61,11 @@ def is_reading_fresh(checked_at_iso, now, max_age_seconds):
         from datetime import datetime
 
         checked = datetime.fromisoformat(str(checked_at_iso))
-    except (TypeError, ValueError):
+        if checked.tzinfo is not None:
+            checked = checked.astimezone().replace(tzinfo=None)
+        age = (now - checked).total_seconds()
+    except (TypeError, ValueError, OverflowError, OSError):
         return False
-    age = (now - checked).total_seconds()
     return 0 <= age <= max_age_seconds
 
 
