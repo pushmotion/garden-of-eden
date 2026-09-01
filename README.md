@@ -203,7 +203,7 @@ the cycle start, so acknowledging one does not immediately re-fire it.
 
 ### 7. Testing and ops
 
-- **185 tests**, up from 134 upstream, including offline HA discovery validation,
+- **185 tests**, up from 126 on upstream `main`, including offline HA discovery validation,
   MQTT control-path tests, and schedule regression tests.
 - `docs/DEPLOYMENT.md` documents the branch model, water calibration and how to
   redo it, the two ways to take a wrong sensor reading, and the open items.
