@@ -20,11 +20,24 @@ DEFAULT_STATE = {
 
 
 def load_state():
+    """Return the persisted state, with DEFAULT_STATE filling any gaps.
+
+    Every key in the file is preserved, not just the ones in DEFAULT_STATE. The
+    old behaviour dropped anything else on load, which quietly broke every
+    caller that persisted something outside the four actuator fields:
+    ``save_state`` wrote the value, and the next ``load_state`` threw it away.
+
+    That is why the "One-Time Pump Run" time reset to 12:00 on every restart
+    despite being saved, and why the water verdict this module now carries for
+    ``bin/water.sh`` would never have reached it.
+    """
     try:
         with open(config.STATE_FILE) as fh:
             data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("state file is not a JSON object")
         merged = dict(DEFAULT_STATE)
-        merged.update({k: data[k] for k in DEFAULT_STATE if k in data})
+        merged.update(data)
         return merged
     except (FileNotFoundError, ValueError):
         return dict(DEFAULT_STATE)
