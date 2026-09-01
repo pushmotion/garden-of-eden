@@ -167,6 +167,60 @@ The current values were validated against two independent observations: at a
 14.16 cm airgap a ruler read 3.5" and the model predicted 49% ("about half");
 after filling, it predicted 100% ("nearly full"). Both matched.
 
+### One calibration, every surface
+
+`config.py` holds the calibration; **nothing else may keep a copy of it.** Every
+derived figure — depth, percent, gallons — comes from `tank_readings()` in
+`app/lib/water.py`, and both surfaces read that same result:
+
+| surface | how it gets the numbers |
+|---|---|
+| Home Assistant | `mqtt.py` publishes `water/depth`, `water/percent`, `water/gallons` |
+| Web UI | `GET /distance` returns `depth`, `percent`, `gallons` alongside the airgap |
+| Either, for labels | `GET /system` returns `water_full_cm`, `water_empty_cm`, `tank_capacity_gallons`, `water_low_cm`, `pump_cutoff_cm` |
+
+This is not tidiness. The web page used to derive its fill bar in JavaScript from
+a hardcoded 5→20 cm tank, which is exactly `config.py`'s default — so it agreed
+with Home Assistant on an uncalibrated tower and silently diverged on a
+calibrated one. On this unit (4.81→23.05) the bar read **47%** where HA read
+**56%** at the cutoff, and showed a flat **0%** with roughly 0.8 gal left.
+`tests/test_tank_parity.py` pins the real thresholds against the measured
+geometry and fails if any client starts deriving its own again.
+
+The pump cap travels the same way: `MAX_PUMP_RUN_SECONDS` is read by the pump
+routes, the schedule compiler, `bin/water.sh`, the HA duration control and the
+web UI's inputs. Raising it in `.env` now raises all of them.
+
+### Inches or centimetres
+
+The tower **measures, stores, publishes and calibrates in metric, always.** Every
+threshold in `.env` is centimetres, every MQTT payload is centimetres, every
+constant in `config.py` is centimetres. That is not negotiable: a unit preference
+that could move a threshold would be a safety bug, and `tests/test_display_units.py`
+asserts that switching it moves none of them.
+
+Units are a *display* choice, made in three independent places:
+
+| surface | how to change it | scope |
+|---|---|---|
+| Web UI | Settings → Units → Metric / Imperial | that browser, remembered |
+| Web UI default | `DISPLAY_UNITS=imperial` in `.env` | any browser that has not chosen |
+| Home Assistant | HA's own unit system, or per-entity override | that HA instance |
+
+This mirrors temperature exactly, which has worked this way all along: the tower
+publishes Celsius and this HA instance displays Fahrenheit because HA converts.
+Every distance entity is `device_class: distance`, so HA can show inches the same
+way — the tower never sends them.
+
+`DISPLAY_UNITS` accepts `imperial`, `us` or `customary`; anything else, including
+a typo, falls back to metric rather than guessing. Imperial covers all three
+kinds of reading — °F, inches and gallons — while metric shows °C, cm and litres.
+
+Note the asymmetry in the tank: capacity is configured as
+`TANK_CAPACITY_GALLONS` because that is how the manufacturer specifies it, so
+metric mode converts gallons *to* litres for display while imperial passes them
+through untouched.
+
 ### Two traps
 
 **Do not run `app/sensors/distance/distance.py` standalone while `mqtt.service`

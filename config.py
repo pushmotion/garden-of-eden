@@ -161,6 +161,23 @@ WATER_READING_MAX_AGE_SECONDS = _get_int("WATER_READING_MAX_AGE_SECONDS", WATER_
 # Assistant drifts out of step with reality. 0 disables the poll.
 ACTUATOR_POLL_SECONDS = _get_int("ACTUATOR_POLL_SECONDS", 15)
 
+# Which unit system clients should display by default: "metric" (cm, C, L) or
+# "imperial" (in, F, gal). This is a *presentation* default only -- the tower
+# always measures, stores, publishes and calibrates in metric, exactly as it
+# always published Celsius and let Home Assistant convert. Changing it must
+# never change a threshold, a calibration constant or anything on the wire.
+#
+# The web UI uses it as the starting point for a browser that has not chosen
+# yet; a viewer's own choice still wins and is remembered per browser. Home
+# Assistant ignores it and applies its own unit system, which is why the tower
+# publishes Celsius to an HA instance that displays Fahrenheit.
+_IMPERIAL_ALIASES = ("imperial", "us", "customary")
+DISPLAY_UNITS = (
+    "imperial"
+    if os.getenv("DISPLAY_UNITS", "metric").strip().lower() in _IMPERIAL_ALIASES
+    else "metric"
+)
+
 # Tank geometry for the cm->gallons readout: distance (cm) from the sensor to the
 # water surface when the tank is full vs empty, and the tank capacity in gallons
 # (Gardyn Home ~5 gal, Studio ~4 gal). Calibrate FULL/EMPTY to your unit.
