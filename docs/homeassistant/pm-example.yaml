@@ -160,6 +160,18 @@ views:
             name: Reminder
             icon: mdi:bell-alert
 
+          # Clearing a reminder from here, rather than having to open the web
+          # UI. The recurring ones never go OFF by themselves, so without these
+          # the alarm above stays lit and cannot drive an automation.
+          - type: entities
+            title: Mark done
+            show_header_toggle: false
+            entities:
+              - entity: button.gardyn_01_ack_nutrient
+                name: Fed the plants
+              - entity: button.gardyn_01_ack_reservoir_change
+                name: Changed the reservoir
+
           - type: tile
             entity: button.gardyn_01_grow_start
             name: Start New Grow Cycle

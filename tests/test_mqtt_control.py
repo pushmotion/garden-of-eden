@@ -299,3 +299,74 @@ class MqttControlTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GrowAcknowledgeTestCase(unittest.TestCase):
+    """Home Assistant must be able to clear a reminder it raised.
+
+    Discovery announced the "Add Plant Food" alarm and nothing that could
+    dismiss it, so the only way to say "done" was the web UI — and because the
+    recurring reminders never edge back to OFF on their own, the binary sensor
+    was useless as an automation trigger.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import config
+        import mqtt
+
+        cls.mqtt = mqtt
+        cls.config = config
+        cls.base = mqtt.BASE_TOPIC
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.config.GROW_STATE_FILE = os.path.join(self.tmp, "grow.json")
+        self.client = FakeClient()
+
+    def send(self, suffix, payload):
+        self.mqtt.on_message(self.client, None, FakeMsg(f"{self.base}/{suffix}", payload))
+
+    def published_for(self, suffix):
+        topic = f"{self.base}/{suffix}"
+        return [p for t, p in self.client.published if t == topic]
+
+    def _make_nutrient_due(self):
+        """Backdate the cycle so the recurring nutrient reminder is due."""
+        from datetime import datetime, timedelta
+
+        started = (
+            datetime.now() - timedelta(days=self.config.NUTRIENT_REMINDER_DAYS + 1)
+        ).isoformat()
+        self.mqtt.grow_lib.save_state(
+            {"stage": "germination", "started": started, "acknowledged": [], "last_ack": {}}
+        )
+
+    def test_acknowledging_clears_the_alarm(self):
+        self._make_nutrient_due()
+        self.assertIn("nutrient", self.mqtt.grow_lib.due_reminders(self.mqtt.grow_lib.load_state()))
+
+        self.send("grow/acknowledge/set", "nutrient")
+
+        state = self.mqtt.grow_lib.load_state()
+        self.assertNotIn("nutrient", self.mqtt.grow_lib.due_reminders(state))
+        self.assertIn("nutrient", state.get("last_ack", {}))
+
+    def test_the_alarm_clears_in_the_same_round_trip(self):
+        """Not thirty minutes later, when the reminder thread next runs."""
+        self._make_nutrient_due()
+        self.send("grow/acknowledge/set", "nutrient")
+        self.assertEqual("OFF", self.published_for("grow/food")[-1])
+
+    def test_every_recurring_reminder_has_a_button(self):
+        """The buttons carry the key as payload_press, so one must exist per key."""
+        import json
+
+        client = FakeClient()
+        self.mqtt.send_discovery_messages(client)
+        presses = {
+            json.loads(p).get("payload_press")
+            for t, p in client.published
+            if "/button/" in t and "_ack_" in t
+        }
+        self.assertEqual(set(self.mqtt.grow_lib.RECURRING), presses)
