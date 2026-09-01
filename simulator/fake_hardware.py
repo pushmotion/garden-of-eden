@@ -26,11 +26,17 @@ def _noise(amplitude):
 
 
 class FakePWMLED:
-    """Mimics gpiozero.PWMLED; remembers its 0..1 value."""
+    """Mimics gpiozero.PWMLED; remembers its 0..1 value.
 
-    def __init__(self, pin, pin_factory=None):
+    ``initial_value`` matters: the real drivers read the pin's live duty cycle
+    and pass it here so that merely constructing a driver does not switch the
+    output off. Without accepting it the fakes raised TypeError, the Pump failed
+    to initialize, and the simulator silently ran with no pump at all.
+    """
+
+    def __init__(self, pin, pin_factory=None, initial_value=0.0, frequency=None, **kwargs):
         self.pin = pin
-        self.value = 0.0
+        self.value = float(initial_value or 0.0)
 
     def close(self):
         self.value = 0.0

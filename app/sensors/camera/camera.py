@@ -10,16 +10,31 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 
 import config
 
 logger = logging.getLogger(__name__)
 
 
+# One capture at a time, process-wide. Two fswebcam runs against the same USB
+# node fail, and there are three callers that can overlap: the MQTT service's
+# hourly publish thread, the thread `refresh/all` spawns, and the REST camera
+# endpoints. Serialising here rather than in each caller means a new caller
+# cannot reintroduce the collision by forgetting.
+#
+# This does not cover the Flask process racing the MQTT service -- separate
+# processes need a file lock for that -- but it does cover every overlap within
+# one process, which includes the easiest to trigger (Refresh All landing on
+# top of the hourly capture).
+_capture_lock = threading.Lock()
+
+
 def capture(device, output_path, resolution=None):
-    """Capture a single frame from ``device`` to ``output_path``.
+    """Capture a frame from ``device`` to ``output_path``.
 
     Returns the output path on success, or raises CalledProcessError/OSError.
+    Blocks while another capture is in flight.
     """
     resolution = resolution or config.CAMERA_RESOLUTION
     cmd = [
@@ -31,10 +46,13 @@ def capture(device, output_path, resolution=None):
         resolution,
         "-S",
         "2",  # skip initial frames so exposure settles
+        "-F",
+        "2",  # then average two, which is what the MQTT path has always done
         output_path,
     ]
-    logger.info("Capturing image from %s -> %s", device, output_path)
-    subprocess.run(cmd, capture_output=True, check=True)
+    with _capture_lock:
+        logger.info("Capturing image from %s -> %s", device, output_path)
+        subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
 

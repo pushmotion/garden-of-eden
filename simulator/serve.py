@@ -7,19 +7,11 @@ placeholder image so the UI renders end to end.
 """
 
 import base64
-import os
 
-# Seed sim-friendly config BEFORE importing config/app (config reads env at import).
-os.environ.setdefault("SENSOR_TYPE", "DHT20")
-os.environ.setdefault("GARDYN_MODEL", "gardyn 3.0 (simulated)")
-os.environ.setdefault("WATER_LOW_CM", "11")
-os.environ.setdefault("LOG_LEVEL", "INFO")
-# Keep simulated state files out of the real home dir.
-_state = os.path.join(os.path.dirname(__file__), ".sim")
-os.makedirs(_state, exist_ok=True)
-os.environ.setdefault("STATE_FILE", os.path.join(_state, "state.json"))
-os.environ.setdefault("GROW_STATE_FILE", os.path.join(_state, "grow.json"))
-os.environ.setdefault("SCHEDULE_FILE", os.path.join(_state, "schedule.json"))
+from simulator import _sandbox
+
+# Seed sim config BEFORE importing config/app (config reads env at import).
+_sandbox.seed_env()
 
 from simulator import fake_hardware  # noqa: E402
 
@@ -30,24 +22,7 @@ from app.lib.logging_config import configure_logging  # noqa: E402
 from app.sensors.camera import camera as _camera  # noqa: E402
 from app.sensors.schedule import schedule as _schedule  # noqa: E402
 
-# Never touch the host's real crontab in simulation. Hold the compiled lines in
-# memory instead of discarding them: returning a constant [] made one-time pump
-# runs unobservable (armed, then absent from GET /schedule/pump/once) and left
-# the cron-vs-saved comparison permanently reading "0 jobs", so neither could be
-# exercised off-Pi.
-_fake_crontab = []
-
-
-def _sim_read_crontab():
-    return list(_fake_crontab)
-
-
-def _sim_write_crontab(lines):
-    _fake_crontab[:] = list(lines)
-
-
-_schedule._read_crontab = _sim_read_crontab
-_schedule._write_crontab = _sim_write_crontab
+_sandbox.sandbox_crontab(_schedule)
 
 # 1x1 JPEG used as a stand-in for real camera frames.
 _PLACEHOLDER_JPEG = base64.b64decode(
