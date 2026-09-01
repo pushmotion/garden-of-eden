@@ -245,6 +245,57 @@ class MqttControlTestCase(unittest.TestCase):
         self.assertIn("ON", self.published_for("pump/state"))
         self.assertIn("55", self.published_for("pump/speed/state"))
 
+    # --- startup schedule replay ---
+    def _always_on_schedule(self, brightness):
+        """A light window covering the whole day, every day, at ``brightness``."""
+        days = {
+            d: [{"onTime": "00:00", "offTime": "23:59", "brightness": brightness}]
+            for d in self.mqtt.sched_lib.DAYS
+        }
+        self.mqtt.sched_lib.save_schedule({"lights": {"enabled": True, "days": days}})
+
+    def test_scheduled_light_reports_brightness_on_the_discovered_topic(self):
+        """Brightness must land on the topic discovery actually declares.
+
+        apply_scheduled_state published to `<base>/light/brightness`, but
+        discovery declares `brightness_state_topic` as
+        `<base>/light/brightness/state`. Nothing subscribes to the former, so a
+        restart into an active photoperiod left Home Assistant showing whatever
+        brightness was retained from before.
+        """
+        self._always_on_schedule(65)
+        self.mqtt.apply_scheduled_state(self.client)
+
+        self.assertIn("ON", self.published_for("light/state"))
+        self.assertIn("65", self.published_for("light/brightness/state"))
+        self.assertEqual(
+            [],
+            self.published_for("light/brightness"),
+            "nothing subscribes to <base>/light/brightness",
+        )
+
+    def test_scheduled_light_off_reports_zero_brightness(self):
+        """The off path must report a level too, not just the on/off state."""
+        self.mqtt.sched_lib.save_schedule(
+            {
+                "lights": {
+                    "enabled": True,
+                    "days": {d: [] for d in self.mqtt.sched_lib.DAYS},
+                }
+            }
+        )
+        # No windows at all means the schedule has no opinion; give it one that
+        # has already ended today so the expected state is definitively "off".
+        days = {
+            d: [{"onTime": "00:00", "offTime": "00:01", "brightness": 70}]
+            for d in self.mqtt.sched_lib.DAYS
+        }
+        self.mqtt.sched_lib.save_schedule({"lights": {"enabled": True, "days": days}})
+        self.mqtt.apply_scheduled_state(self.client)
+
+        self.assertIn("OFF", self.published_for("light/state"))
+        self.assertIn("0", self.published_for("light/brightness/state"))
+
 
 if __name__ == "__main__":
     unittest.main()

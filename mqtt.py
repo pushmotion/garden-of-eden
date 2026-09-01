@@ -1628,12 +1628,15 @@ def apply_scheduled_state(client):
                 light_state = True
                 brightness = level
                 light.set_duty_cycle(level)
-                client.publish(BASE_TOPIC + "/light/state", "ON")
-                client.publish(BASE_TOPIC + "/light/brightness", str(level))
             else:
                 light_state = False
                 light.off()
-                client.publish(BASE_TOPIC + "/light/state", "OFF")
+            # Report through the shared publisher rather than hand-rolling the
+            # topics: this published brightness to `<base>/light/brightness`,
+            # which no entity subscribes to -- discovery declares
+            # `<base>/light/brightness/state`. One caller owning the topic
+            # strings is what stops the pair drifting apart again.
+            publish_light_state(client)
             state_lib.save_state(light_on=light_state, brightness=brightness)
             logger.info("Applied scheduled light state: on=%s brightness=%s", should_be_on, level)
 
