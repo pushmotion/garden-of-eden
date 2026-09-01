@@ -4,6 +4,22 @@
 
 Truly own that which is yours!
 
+> ### This is the PushMotion fork
+>
+> Firmware for a **Gardyn** hydroponic tower on a Raspberry Pi. This fork tracks
+> upstream [`iot-root/garden-of-eden`](https://github.com/iot-root/garden-of-eden)
+> 2.0.0 and adds pump-control fixes, actuator-state correctness, non-destructive
+> scheduling, deterministic Home Assistant entity ids, and multi-tower support.
+> **[What this fork adds](#what-this-fork-adds)** documents every change.
+>
+> - **Build branch:** `feat/gardyn-tower-local` — the full stack the towers run.
+>   `main` is kept a pure mirror of `upstream/main`.
+> - **Running a tower?** Read [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) first. It
+>   covers the water calibration, the two ways to take a wrong sensor reading,
+>   where tests may safely run (**never on the Pi**), and the open items.
+> - **Upstream `main` is not safe to run** on a tower: it reintroduces three pump
+>   defects described [below](#1-pump-control-was-unusable-from-home-assistant).
+
 If you are interested in collaborating please review the [CONTRIBUTORS](CONTRIBUTORS.md) for commit styling guides.
 
 ## Video Tutorial for Gardyn of Eden and Homeassistant
@@ -32,8 +48,8 @@ A broad overhaul closing out the open milestones:
   is reachable at `gardyn.local` right after flashing.
 
 > Installing on a Pi? Follow [`docs/INSTALL.md`](docs/INSTALL.md) — a step-by-step,
-> brick-safe handoff (dry-run, backups, uninstall). Note the code is on the
-> **`v2-overhaul`** branch.
+> brick-safe handoff (dry-run, backups, uninstall). On this fork the code is on
+> **`feat/gardyn-tower-local`**, not `main`.
 - **Self-sufficient REST API** — camera, scheduling, grow-cycle, and system/model
   endpoints (see below), with optional API-key auth.
 - **Home Assistant** — the physical button is now an HA `event` entity
@@ -50,6 +66,153 @@ A broad overhaul closing out the open milestones:
 See [`docs/design.md`](docs/design.md) for architecture, and
 [`docs/maintenance.md`](docs/maintenance.md) for upkeep.
 
+## What this fork adds
+
+30 commits on top of upstream 2.0.0, across 35 files. Grouped by what they fix
+or add, with the reasoning where the behaviour is non-obvious.
+
+### 1. Pump control was unusable from Home Assistant
+
+Three defects that compound each other. All three are still present upstream, so
+a tower must not track `iot-root` `main`.
+
+| # | Defect | Effect |
+|---|--------|--------|
+| 1 | `pump/speed/set` never published `pump/state` | HA showed the pump **OFF while it ran**; once HA believed it was off it stopped sending brightness commands entirely, so the slider went dead until a service restart |
+| 2 | `pump/command` ON hit the water-low guard and returned **without publishing state** | the power button looked completely inert — no feedback, no error |
+| 3 | `pump/speed/set` had **no water guard at all** | the speed slider bypassed the dry-run protection the power button enforced |
+
+The interaction is what makes this severe: (1) and (2) make the button look
+broken, so the slider is exactly what a user reaches for — and the slider is the
+one path that could run the pump dry. Proposed upstream as
+[`iot-root/garden-of-eden#95`](https://github.com/iot-root/garden-of-eden/pull/95).
+
+### 2. Actuator state now reflects the hardware
+
+The tower is driven from four places — cron, MQTT, REST, and the physical button
+— and nothing reconciled them, so Home Assistant routinely showed the opposite of
+reality.
+
+- **Constructing a driver no longer resets the pin.** `PWMLED(pin)` defaults to
+  `initial_value=0`, and `app/__init__.py` imports every blueprint at module
+  level — so merely *starting the API* wrote 0 and killed the lights mid
+  photoperiod, invisibly, until the next cron on-time. Fixed by seeding from
+  `hardware.current_duty_fraction()`. (`initial_value=None` is not usable —
+  gpiozero range-checks it and raises `TypeError`.)
+- **Changes made outside the service are detected.** `reconcile_actuator_state()`
+  polls both duty cycles every `ACTUATOR_POLL_SECONDS` (default 15) and
+  republishes on change, so a cron-driven light change reaches HA. gpiozero does
+  read PWM duty back through pigpiod — verified: an external `light 30` reads as
+  30.0 in a process that constructed its `Light` at 65.
+- **State is persisted on every change**, over MQTT as well as REST, so
+  power-loss recovery restores a true value and the button's next press does not
+  fight whatever HA last did.
+- **`apply_scheduled_state()` replays the schedule's expected light state on
+  every MQTT connect**, so a power cut self-heals instead of leaving the tower
+  dark until the next on-time. Pump runs are deliberately *never* auto-resumed: a
+  crash-looping service would re-trigger watering on every connect, and a missed
+  run self-heals at the next scheduled one.
+- `DEFAULT_BRIGHTNESS` / `DEFAULT_PUMP_SPEED` are honoured from config.
+
+### 3. Scheduling: scalar edits no longer destroy a schedule
+
+The MQTT entities describe **one** window/run per day, but the schedule can hold
+several. All four setters used to write their single value across all seven days,
+silently discarding the rest — a tower watering seven times a day dropped to once,
+21 min/day of watering to 3, with no warning. Both pairs are now surgical:
+
+| Control | Behaviour |
+|---|---|
+| Brightness, Pump minutes | applied to **every** existing window/run; count and times untouched |
+| Lights on/off, Pump run at | moves only the **first** window/run of each day; later ones survive |
+
+A scalar cannot express a multi-window day, so moving one window is predictable
+and reversible where collapsing the day to it is not. Four regression tests build
+a two-window, two-run Monday and assert the second of each survives.
+
+**One-time pump runs** were added for the case those controls were being misused
+for. `One-Time Pump Run` arms a single dated cron entry under its own marker,
+written directly rather than through `apply_schedule()`, so arming one cannot
+rewrite the recurring schedule — and the marker contains `CRON_MARKER` as a
+substring, so both `apply_schedule()` and `installed_cron_lines()` exclude it
+explicitly. Without that, applying a schedule would silently cancel a pending
+one-off. Cron has no concept of "once", so each line carries its ISO timestamp
+and the nightly refresh prunes spent entries.
+
+**New schedule endpoints:** `/schedule/state` (derived state), `/schedule/next`,
+`/schedule/validate` (dry run), `/schedule/cron` (compiled lines), and
+`GET`/`POST`/`DELETE` `/schedule/pump/once`.
+
+`MAX_PUMP_RUN_SECONDS` (300) hard-caps any single run on every path — MQTT, REST,
+CLI and cron — and is now surfaced read-only as `Max Pump Run Time`.
+
+### 4. Home Assistant: deterministic entities, multi-tower safe
+
+- **Every discovery payload pins `object_id`** to its `unique_id`, so entity ids
+  are always `<domain>.<MQTT_IDENTIFIER>_<suffix>`. Left to itself HA derives the
+  id from the *display name*, under rules that vary by release and by whether the
+  device name collides with another — which left one tower straddling two schemes
+  (`sensor.gardyn_temperature` alongside `sensor.gardyn_1_gardyn_water_depth`).
+  Pinning also means renaming an entity in the UI can never move it out from
+  under a dashboard.
+- **`MQTT_BASETOPIC` defaults to `MQTT_IDENTIFIER`**, so each tower gets its own
+  topic namespace. This is not cosmetic: `mqtt.py` subscribes to
+  `BASE_TOPIC + "/#"`, so two units sharing a base topic receive each other's
+  commands and one tower's light switch drives both. A second tower is now one
+  line: `MQTT_IDENTIFIER=gardyn_02`.
+- **New entities:** Water Depth, Water Remaining (%), Water Gallons, Next Pump
+  Run, Pending One-Time Pump Run, Max Pump Run Time, Manual Pump Run Time,
+  One-Time Pump Run, Refresh All / Refresh Status / Last Refresh, Last Log.
+- **Refresh All** re-reads every sensor and both cameras on demand and *reports*
+  the light and pump duty cycle without changing either; `Refresh Status` reads
+  `OK` or `PARTIAL: <what failed>`.
+- **[`bin/ha-align-entity-ids.py`](bin/ha-align-entity-ids.py)** renames existing
+  registry entries onto the pinned scheme. `object_id` only applies when HA first
+  creates an entry — it matches on `unique_id` and reuses the old entity_id
+  forever — so a tower discovered before this change needs a rename. Renaming
+  beats deleting the device: the registry entry survives, so recorder history and
+  long-term statistics follow the entity. Registry writes are websocket-only, so
+  this cannot be done with `curl`. Dry run by default.
+- **Dashboards:** [`pm-example.yaml`](docs/homeassistant/pm-example.yaml) is a
+  Sections layout grouped by function (status first, then lighting, pump,
+  one-time runs, environment, cameras, diagnostics);
+  [`lovelace-example.yaml`](docs/homeassistant/lovelace-example.yaml) is the
+  simpler plain card list.
+
+### 5. Web UI
+
+- Camera stills and timelapses are fetched **with the API key**, and a 401
+  prompts for a key instead of failing silently.
+- Brightness and speed sliders are **seeded from real hardware state** rather
+  than defaults.
+- Cameras are captured **one at a time** — concurrent capture was unreliable on
+  the Pi Zero.
+- Each frame is **stamped with its capture time**; timelapse frame rate scales to
+  the archive length (`TIMELAPSE_TARGET_SECONDS`) so short archives play at a
+  watchable speed instead of flashing past, and archive status is reported.
+- The plant grid is laid out **as the physical towers**, so the screen matches
+  what you are looking at.
+- A **Fahrenheit or Celsius preference** is remembered.
+- Pump power stats are rounded to two decimals.
+
+### 6. Grow cycle
+
+Recurring reminders are **anchored to the last acknowledgement** rather than to
+the cycle start, so acknowledging one does not immediately re-fire it.
+`NUTRIENT_REMINDER_DAYS` and `RESERVOIR_CHANGE_DAYS` are configurable.
+
+### 7. Testing and ops
+
+- **185 tests**, up from 134 upstream, including offline HA discovery validation,
+  MQTT control-path tests, and schedule regression tests.
+- `docs/DEPLOYMENT.md` documents the branch model, water calibration and how to
+  redo it, the two ways to take a wrong sensor reading, and the open items.
+
+> **Tests must never run on the Pi.** `tests/_hwstub.py` injects fakes only when
+> the real GPIO libs are *absent*, and `app/__init__.py` imports every sensor
+> blueprint at module level — so on a tower, importing even `app.lib.grow`
+> instantiates real GPIO drivers on a unit full of plants.
+
 ### REST API endpoints
 
 | Method | Path | Purpose |
@@ -62,9 +225,21 @@ See [`docs/design.md`](docs/design.md) for architecture, and
 | GET | `/distance` `/distance/measure` | water-level distance (cm) |
 | GET | `/temperature` `/humidity` `/pcb-temp` | environment sensors |
 | GET | `/camera/upper` `/camera/lower` | capture a still (JPEG) |
-| GET/POST | `/schedule` | lights/pump cron schedule |
+| GET/POST | `/camera/timelapse/<cam>` | fetch / build a timelapse |
+| GET | `/camera/timelapse/<cam>/status` | frame count, archive status |
+| GET/POST | `/schedule` | read / replace the lights+pump schedule |
+| GET | `/schedule/state` | derived state — what the schedule says should be true now |
+| GET | `/schedule/next` | next light transition and next pump run |
+| POST | `/schedule/validate` | **dry run** — validate and compile without applying |
+| GET | `/schedule/cron` | the compiled crontab lines |
+| GET/POST/DELETE | `/schedule/pump/once` | list / arm / clear one-time pump runs |
 | GET | `/grow` · POST `/grow/start` `/grow/stage` `/grow/acknowledge` | grow-cycle |
+| GET/POST | `/pods` · POST `/pods/<id>` | pod contents (what is planted where) |
 | GET | `/system` | identity, version, detected model/profile |
+
+Optional API-key auth applies to every route when `GARDEN_API_KEY` is set
+(`X-API-Key` header); localhost bypasses it, and `/` plus `/static` stay open so
+the web UI can load and prompt for a key.
 
 ### Run with Docker
 
@@ -94,6 +269,14 @@ See [`docs/simulator.md`](docs/simulator.md).
 
 - [Garden of Eden](#garden-of-eden)
   - [Project Status \& Milestones](#project-status--milestones)
+  - [What this fork adds](#what-this-fork-adds)
+    - [1. Pump control was unusable from Home Assistant](#1-pump-control-was-unusable-from-home-assistant)
+    - [2. Actuator state now reflects the hardware](#2-actuator-state-now-reflects-the-hardware)
+    - [3. Scheduling: scalar edits no longer destroy a schedule](#3-scheduling-scalar-edits-no-longer-destroy-a-schedule)
+    - [4. Home Assistant: deterministic entities, multi-tower safe](#4-home-assistant-deterministic-entities-multi-tower-safe)
+    - [5. Web UI](#5-web-ui)
+    - [6. Grow cycle](#6-grow-cycle)
+    - [7. Testing and ops](#7-testing-and-ops)
   - [Table of Contents](#table-of-contents)
   - [Getting Started](#getting-started)
     - [Prerequisites](#prerequisites)
@@ -183,7 +366,46 @@ sudo systemctl status mqtt.service
 
 ### MQTT with HomeAssistant
 
-For homeassistant:
+Every entity is created automatically by MQTT discovery — nothing is added by
+hand. 37 entities appear under one device.
+
+**Entity ids are deterministic:** `<domain>.<MQTT_IDENTIFIER>_<suffix>`, because
+each discovery payload pins `object_id` to its `unique_id`. With
+`MQTT_IDENTIFIER=gardyn_01` you get `sensor.gardyn_01_water_depth`, and a
+dashboard ports to another tower by find/replacing the identifier.
+
+The suffix is the `unique_id`, which is **not always the display-name slug** —
+deliberately, since the display name is cosmetic and the unique_id is the
+contract:
+
+| Display name | Entity id |
+|---|---|
+| Water Remaining | `sensor.<id>_water_percent` |
+| PCB Temperature | `sensor.<id>_pcb_temp` |
+| Add Plant Food | `binary_sensor.<id>_food` |
+| Last Refresh | `sensor.<id>_refresh_last` |
+| Last Log | `sensor.<id>_log` |
+| Lights Schedule | `switch.<id>_sched_lights` |
+
+Generate the definitive list for any identifier:
+
+```bash
+python - <<'PY'
+import json, tests, mqtt          # tests/ loads the hardware stubs
+class C:
+    def __init__(self): self.pub = []
+    def publish(self, topic, payload=None, **kw): self.pub.append((topic, payload))
+c = C(); mqtt.send_discovery_messages(c)
+for t, p in sorted(c.pub):
+    d = json.loads(p); print(f'{t.split("/")[1]}.{d["object_id"]:40} {d["name"]}')
+PY
+```
+
+**Running more than one tower:** set `MQTT_IDENTIFIER` per unit and leave
+`MQTT_BASETOPIC` unset. Two towers sharing a base topic would receive each
+other's commands. See [Running more than one tower](docs/DEPLOYMENT.md).
+
+Example dashboards live in [`docs/homeassistant/`](docs/homeassistant/).
 
 You need a mqtt broker either on the gardyn pi or homeassistant.
 
@@ -282,9 +504,7 @@ Open two terminals on the gardyn pi, in one run:
 
 In the second gardyn pi terminal, run:
 
-`mosquitto_pub -t "gardyn_01/water/level/get" -m ""-r  -u gardyn -P "somepassword"`
-
-```
+`mosquitto_pub -t "gardyn_01/water/level/get" -m "" -r -u gardyn -P "somepassword"`
 
 ### Testing
 
@@ -295,15 +515,30 @@ Start the Flask REST API `python run.py`
 Test options:
 
 ```bash
-# REST endpoints
+# unit tests (185) — the CI gate. Run this OFF the Pi.
+python -m unittest discover -t . -s tests -p 'test_*.py'
+
+# lint + format, also gated in CI
+ruff check . && black --check .
+
+# individual test module
+python -m unittest tests.test_distance
+
+# REST endpoints against a running run.py
 ./bin/api-test.sh
-
-# unit test
-python -m unittest -v
-
-# individual tests
-python tests/test_distance.py
 ```
+
+Two things that will bite you otherwise:
+
+- **Use the `discover -t . -s tests` form.** The hardware-stub bootstrap lives in
+  the `tests` package `__init__`, so a plain `python -m unittest` imports `app`
+  directly and fails off-Pi.
+- **Never run the suite on a Pi.** `tests/_hwstub.py` injects fakes only when the
+  real GPIO libs are *absent*. On a tower they are present, the stubs disengage,
+  and importing the app instantiates real GPIO drivers on a unit full of plants.
+  Use a laptop, WSL, or the [simulator](docs/simulator.md).
+- **`bin/api-test.sh` spins the pump motor** (`control_pump 30`). Do not run it
+  unless the pump is submerged.
 
 ### Controlling Individual Sensors
 
@@ -522,28 +757,47 @@ Using `gpiozero` to leverage `pigpio` daemon which is hardware driven and more e
 ## Folder Structure
 
 ```text
-<gardyn-of-eden>
-├── run.py
+<garden-of-eden>
+├── config.py               all pins, I2C addresses, thresholds, paths, flags
+├── run.py                  Flask REST API entry point
+├── mqtt.py                 MQTT service + Home Assistant discovery (mqtt.service)
 ├── app
-│   ├── __init__.py
-│   └── sensors
-│       ├── config.py
-│       ├── distance
-│       │   ├── distance.py
-│       │   ├── __init__.py
-│       │   └── routes.py
-│       ├── __init__.py
-│       ├── light
-│       │   ├── __init__.py
-│       │   ├── light.py
-│       │   └── routes.py
-│       └── pump
-│           ├── __init__.py
-│           ├── pump.py
-│           └── routes.py
-└── tests
-    ├── __init__.py
-    ├── test_distance.py
-    ├── test_light.py
-    └── test_pump.py
+│   ├── __init__.py         create_app(): blueprints, CORS, optional API-key auth
+│   ├── lib                 shared helpers, not tied to one sensor
+│   │   ├── hardware.py     get_pin_factory(), detect_model(), current_duty_fraction()
+│   │   ├── lib.py          check_sensor_guard(): 400 on bad init, 503 on hw error
+│   │   ├── water.py        is_water_low()
+│   │   ├── grow.py         grow-cycle state + reminder cadence
+│   │   ├── state.py        actuator state persistence for power-loss recovery
+│   │   └── logging_config.py
+│   ├── sensors             one folder per sensor: <name>.py driver + routes.py
+│   │   ├── light/ pump/ distance/ temperature/ humidity/ pcb_temp/
+│   │   ├── camera/         stills + timelapse
+│   │   ├── schedule/       schedule.py compiles the schedule into crontab lines
+│   │   └── grow/ pods/ system/
+│   ├── integrations        alexa.py, thingsboard.py (documented glue points)
+│   └── web                 self-contained index.html control UI served at /
+├── bin
+│   ├── setup.sh            one-time Pi setup (idempotent)
+│   ├── update.sh           in-place update (garden-update)
+│   ├── light.sh water.sh   CLI wrappers cron calls (/usr/local/bin/light|water)
+│   ├── schedule-refresh.sh nightly: expire vacation mode, prune spent one-offs
+│   ├── ha-align-entity-ids.py  rename HA entity ids onto the pinned scheme
+│   └── api-test.sh         curls every REST endpoint (spins the pump)
+├── simulator               full stack with stateful fake hardware, off-Pi
+├── services                systemd unit, mosquitto + telegraf configs, udev rules
+├── docs                    DEPLOYMENT.md, INSTALL.md, design, access, homeassistant/
+└── tests                   185 tests; _hwstub.py fakes GPIO when libs are absent
 ```
+
+Every sensor follows the same shape — `<name>.py` (a driver class with an
+argparse `__main__` so it runs standalone), `routes.py` (a Flask blueprint whose
+handlers are wrapped in `check_sensor_guard`), and `__init__.py`. Adding a sensor
+is a new folder plus one `register_blueprint` line. Drivers are instantiated at
+import inside `try/except` → `None`, so the app still imports off-Pi and the
+guard returns a clean 400/503 instead of crashing.
+
+**Three entry points, one driver layer.** `mqtt.py`, `run.py`/`app/`, and the
+per-driver CLIs all import the *same* classes from `app/sensors/*`. Behaviour
+changes — how the pump ramps, how the water guard works — belong in the driver,
+not in any single entry point.
