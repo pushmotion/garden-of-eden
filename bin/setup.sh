@@ -7,6 +7,21 @@ LOG_FILE="/tmp/install_packages.log"
 PYTHON_ENV_LOG_FILE="/tmp/setup_python_env.log"
 VERBOSE=false
 
+# Generated systemd units are rendered here, never into the repo.
+#
+# They used to be written over services/etc/systemd/system/*.service, and
+# mqtt.service is tracked in git. Since the rendered unit carries this host's
+# $USER and $INSTALL_DIR, that left every deployed Pi with a permanently dirty
+# working tree -- which hid real drift, and, worse, meant the first upstream
+# commit to touch that file would make bin/autoupdate.sh's `git pull --ff-only`
+# refuse. It exits 0 on that path, so the tower would simply stop updating with
+# one line in a log nobody reads.
+#
+# The tracked file stays as a reference copy of the unit's shape; nothing writes
+# to it any more.
+GENERATED_DIR=$(mktemp -d -t garden-units-XXXXXX)
+trap 'rm -rf "$GENERATED_DIR"' EXIT
+
 # Safety flags
 DRY_RUN=false
 ASSUME_YES=false
@@ -358,7 +373,7 @@ function enable_pigpiod_service {
 
 # Setup and start MQTT service
 function setup_mqtt_service {
-    local service_file="$INSTALL_DIR/services/etc/systemd/system/mqtt.service"
+    local service_file="$GENERATED_DIR/mqtt.service"
 
     cat > $service_file <<EOF
 [Unit]
@@ -391,7 +406,7 @@ EOF
 
 # Setup and start the REST API + web UI service (served by waitress on :5000).
 function setup_api_service {
-    local service_file="$INSTALL_DIR/services/etc/systemd/system/garden-api.service"
+    local service_file="$GENERATED_DIR/garden-api.service"
     mkdir -p "$(dirname "$service_file")"
 
     cat > $service_file <<EOF
@@ -420,7 +435,7 @@ EOF
 
 # Boot heartbeat: pulse the lights on startup so power-on is visibly confirmed.
 function setup_boot_indicator {
-    local service_file="$INSTALL_DIR/services/etc/systemd/system/garden-boot-indicator.service"
+    local service_file="$GENERATED_DIR/garden-boot-indicator.service"
     mkdir -p "$(dirname "$service_file")"
 
     cat > $service_file <<EOF
@@ -448,8 +463,8 @@ EOF
 # Nightly auto-update: a timer that fast-forwards the branch and restarts the
 # services only when something changed (bin/autoupdate.sh does the safe pull).
 function setup_autoupdate {
-    local svc="$INSTALL_DIR/services/etc/systemd/system/garden-autoupdate.service"
-    local tmr="$INSTALL_DIR/services/etc/systemd/system/garden-autoupdate.timer"
+    local svc="$GENERATED_DIR/garden-autoupdate.service"
+    local tmr="$GENERATED_DIR/garden-autoupdate.timer"
     mkdir -p "$(dirname "$svc")"
 
     chmod +x "$INSTALL_DIR/bin/autoupdate.sh"
