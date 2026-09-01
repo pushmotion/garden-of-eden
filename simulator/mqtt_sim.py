@@ -15,30 +15,24 @@ button event). Override the broker with MQTT_BROKER / MQTT_PORT env vars.
 import os
 import runpy
 
-# Seed sim-friendly config before mqtt.py imports config.
-os.environ.setdefault("SENSOR_TYPE", "DHT20")
-os.environ.setdefault("GARDYN_MODEL", "gardyn 3.0 (simulated)")
-os.environ.setdefault("WATER_LOW_CM", "11")
-os.environ.setdefault("MQTT_BROKER", "localhost")
-os.environ.setdefault("MQTT_PORT", "1883")
-os.environ.setdefault("MQTT_IDENTIFIER", "gardyn_sim")
-_state = os.path.join(os.path.dirname(__file__), ".sim")
-os.makedirs(_state, exist_ok=True)
-os.environ.setdefault("STATE_FILE", os.path.join(_state, "state.json"))
-os.environ.setdefault("GROW_STATE_FILE", os.path.join(_state, "grow.json"))
-os.environ.setdefault("SCHEDULE_FILE", os.path.join(_state, "schedule.json"))
+from simulator import _sandbox
+
+# Seed sim config before mqtt.py imports config.
+_sandbox.seed_env(
+    MQTT_BROKER="localhost",
+    MQTT_PORT="1883",
+    MQTT_IDENTIFIER="gardyn_sim",
+)
 
 from simulator import fake_hardware  # noqa: E402
 
 fake_hardware.install()
 
 # Sandbox the crontab writer so schedule changes from HA never touch the host's
-# real crontab (mqtt.py's schedule toggles call apply_schedule). Mirrors the
-# guard serve.py applies to the Flask /schedule route.
+# real crontab (mqtt.py's schedule toggles call apply_schedule).
 from app.sensors.schedule import schedule as _schedule  # noqa: E402
 
-_schedule._read_crontab = lambda: []
-_schedule._write_crontab = lambda lines: None
+_sandbox.sandbox_crontab(_schedule)
 
 if __name__ == "__main__":
     print("Garden of Eden MQTT simulator -> broker", os.environ["MQTT_BROKER"])

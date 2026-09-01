@@ -38,7 +38,11 @@ trigger:
     at: "21:05:00"
     id: "off"
 action:
-  - service: fan.turn_{{trigger.id}}
+  # light.*, not fan.*: the pump is announced in the `light` domain, so a
+  # fan service call fails with unknown-entity on every trigger. The
+  # `device_class: fan` in its discovery payload is cosmetic -- the MQTT light
+  # platform ignores it -- and is what made `fan.turn_on` look correct here.
+  - service: light.turn_{{trigger.id}}
     target:
       entity_id: light.gardyn_01_pump
 mode: queued

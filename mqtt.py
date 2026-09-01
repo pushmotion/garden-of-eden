@@ -880,6 +880,27 @@ def send_discovery_messages(client):
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
 
+    # One acknowledge button per recurring reminder. Without these HA could
+    # raise the alarm and not clear it -- you had to open the web UI to say
+    # "done" -- and because the recurring reminders never edge back to OFF on
+    # their own, the binary sensor above was useless as an automation trigger.
+    # A button rather than a switch: acknowledging is a stateless action, and
+    # the state that matters is already the sensor's.
+    for key in grow_lib.RECURRING:
+        label = key.replace("_", " ").title()
+        pub(
+            f"homeassistant/button/gardyn/{IDENTIFIER}_ack_{key}/config",
+            {
+                "name": f"Acknowledge {label}",
+                "unique_id": f"{IDENTIFIER}_ack_{key}",
+                "command_topic": BASE_TOPIC + "/grow/acknowledge/set",
+                "payload_press": key,
+                "icon": "mdi:check-decagram",
+                "entity_category": "config",
+                "device": device_info,
+            },
+        )
+
     # --- Grow cycle: manage the same things the web UI exposes, from HA ---
     pub(
         f"homeassistant/select/gardyn/{IDENTIFIER}_grow_stage/config",
@@ -1077,7 +1098,13 @@ def send_discovery_messages(client):
 
 
 def publish_grow_state(client):
-    """Publish current grow stage + day (retained) so HA reflects real state."""
+    """Publish the whole grow surface (retained) so HA reflects real state.
+
+    Includes ``grow/food``, which used to be published only by the half-hourly
+    reminder thread. That left the "Add Plant Food" alarm lit for up to thirty
+    minutes after it was acknowledged -- long enough to look broken, and long
+    enough to press the button twice.
+    """
     try:
         state = grow_lib.load_state()
         client.publish(BASE_TOPIC + "/grow/stage", state.get("stage", ""), retain=True)
@@ -1085,6 +1112,7 @@ def publish_grow_state(client):
         client.publish(BASE_TOPIC + "/grow/day", str(day), retain=True)
         due = grow_lib.due_reminders(state)
         client.publish(BASE_TOPIC + "/grow/reminder", due[-1] if due else "none", retain=True)
+        client.publish(BASE_TOPIC + "/grow/food", "ON" if "nutrient" in due else "OFF", retain=True)
     except Exception:
         logger.exception("Error publishing grow state")
 
@@ -1451,6 +1479,17 @@ def on_message(client, userdata, msg):
             grow_lib.start_cycle()
             publish_grow_state(client)
 
+        elif topic_suffix == "grow/acknowledge/set":
+            # Payload is the reminder key, carried by each button's
+            # payload_press. Republishing includes grow/food, so the alarm
+            # clears in the same round trip rather than waiting for the
+            # half-hourly reminder thread.
+            grow_state = grow_lib.load_state()
+            grow_lib.acknowledge(grow_state, payload)
+            grow_lib.save_state(grow_state)
+            logger.info("Acknowledged grow reminder: %s", payload)
+            publish_grow_state(client)
+
         # === Schedule toggles (HA control; rewrites crontab) ===
         elif topic_suffix == "schedule/lights/enabled/set":
             _set_schedule_flag(client, "lights", payload.upper() == "ON")
@@ -1542,41 +1581,19 @@ def publish_water_level(client):
 
 
 def capture_and_publish_images(client):
-    """Capture one frame from each camera, archive it, and publish both JPEGs."""
-    # Capture upper camera image
-    subprocess.check_call(
-        [
-            "fswebcam",
-            "-d",
-            UPPER_CAMERA_DEVICE,
-            "-r",
-            CAMERA_RESOLUTION,
-            "-S",
-            "2",
-            "-F",
-            "2",
-            "--no-banner",
-            UPPER_IMAGE_PATH,
-        ]
-    )
+    """Capture one frame from each camera, archive it, and publish both JPEGs.
+
+    Goes through ``camera_mod.capture`` rather than building its own fswebcam
+    argv. That module documents itself as the single home for capture behaviour
+    and was being bypassed here, so the two had already drifted -- and, more to
+    the point, the lock that stops two captures colliding on one USB node lives
+    there. This function runs on the hourly thread *and* on the thread
+    ``refresh/all`` spawns, so it was the likeliest pair to collide.
+    """
+    camera_mod.capture(UPPER_CAMERA_DEVICE, UPPER_IMAGE_PATH, CAMERA_RESOLUTION)
     logger.info(f"Captured image from upper camera ({UPPER_CAMERA_DEVICE})")
 
-    # Capture lower camera image
-    subprocess.check_call(
-        [
-            "fswebcam",
-            "-d",
-            LOWER_CAMERA_DEVICE,
-            "-r",
-            CAMERA_RESOLUTION,
-            "-S",
-            "2",
-            "-F",
-            "2",
-            "--no-banner",
-            LOWER_IMAGE_PATH,
-        ]
-    )
+    camera_mod.capture(LOWER_CAMERA_DEVICE, LOWER_IMAGE_PATH, CAMERA_RESOLUTION)
     logger.info(f"Captured image from lower camera ({LOWER_CAMERA_DEVICE})")
 
     # Archive timestamped frames for timelapse assembly.
