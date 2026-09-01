@@ -102,11 +102,36 @@ Calibrated values for this unit:
 |---|---|---|
 | `WATER_EMPTY_CM` | 23.05 | sensor face to tank floor |
 | `WATER_FULL_CM` | 4.81 | airgap at the fill line |
-| `WATER_LOW_CM` | 13.0 | **alert** ≈ 10.0 cm depth ≈ 55% remaining |
-| `PUMP_CUTOFF_CM` | 17.6 | **interlock** ≈ 5.5 cm depth ≈ 30% remaining |
+| `WATER_LOW_CM` | 9.1 | **alert** ≈ 13.95 cm depth ≈ 5.5" ≈ 76% remaining |
+| `PUMP_CUTOFF_CM` | 12.9 | **interlock** ≈ 10.15 cm depth ≈ **4.0"** ≈ 56% remaining |
 | `TANK_CAPACITY_GALLONS` | 5 | **unverified** — upstream default, see Open items |
 
 Usable depth is therefore ~18.2 cm (7.2").
+
+### Where the 4-inch cutoff comes from
+
+`PUMP_CUTOFF_CM=12.9` is **4 inches of water above the tank floor**, and that
+number is about the pump, not the percentage it happens to correspond to:
+
+- Gardyn units vary in intake design — some pumps draw from the bottom, others
+  from the side. 4" clears both.
+- It carries roughly 1.5" of margin for the tower sitting tilted, which is the
+  realistic failure case: a level reading says there is water, and the intake is
+  on the high side of a sloped surface with none over it.
+
+Two consequences worth knowing before changing it:
+
+**Only ~44% of the tank is usable.** Total usable depth is 18.24 cm (7.18"), so
+a 4" floor leaves 3.18" of working range. That is a property of a shallow
+reservoir and a pump that needs head, not something to tune away — expect to
+refill at what looks like a half-full tank.
+
+**The alert had to move with it.** 4" is 55.6% remaining, and the previous alert
+sat at 55.1% — the cutoff would have tripped essentially before you were ever
+warned. `WATER_LOW_CM=9.1` (5.5", 76%) puts the warning 1.5" of water ahead of
+the stop, mirroring the tilt margin. If you raise the cutoff, raise the alert
+too: `pump_cutoff()` rejects an inverted pair and silently falls back to the
+alert value, which would leave you with no interlock beyond the warning.
 
 ### Why two thresholds
 
@@ -473,12 +498,11 @@ working correctly until the plants dry out.
       is verified; this one energizes the motor and was left for a physical check.
       The *refusal* path is verified — see "How watering is guarded" — but that
       only proves the pump stays off, not that it runs correctly when allowed.
-- [ ] **The cutoff depth has not been checked against the pump intake.**
-      `PUMP_CUTOFF_CM=17.6` leaves ~5.5 cm of water, chosen as ~30% remaining
-      rather than measured against the height the intake starts pulling air.
-      One measurement with the reservoir out would turn it from a judgement into
-      a fact. The old single threshold left only ~3 cm, so this is already the
-      safer of the two, but neither number is grounded in the hardware.
+- [x] ~~**The cutoff depth has not been checked against the pump intake.**~~ —
+      resolved 2026-09-01. Set to 4" of water, which clears both bottom- and
+      side-draw intakes and carries ~1.5" of tilt margin. See "Where the 4-inch
+      cutoff comes from". The number is now grounded in the hardware rather
+      than in a percentage that felt about right.
 - [ ] **GPIO header bridge scan not run.** A `pinctrl`-based script exists at
       `~/gpio-bridge-test.sh` to check the resoldered 40-pin header. Requires the
       harness unplugged with `mqtt.service` and `pigpiod` stopped. A multimeter
