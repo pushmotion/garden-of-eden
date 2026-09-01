@@ -13,6 +13,7 @@ import board
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 import config
+from app.lib import ambient
 
 logger = logging.getLogger(__name__)
 
@@ -36,31 +37,30 @@ class HumiditySensor:
         except Exception as exc:
             logger.error("Failed to initiate humidity sensor: %s", exc)
 
-    def read(self):
-        """Return relative humidity (%). Retries transient I2C errors and the
-        DHT20's occasional bogus 0% reading; raises only if all attempts fail."""
-        last_exc = None
-        for attempt in range(3):
-            if self._sensor is None:
-                try:
-                    self._sensor = _make_sensor()  # re-probe the bus
-                except Exception as exc:
-                    last_exc = exc
-                    time.sleep(0.2)
-                    continue
-            try:
-                value = self._sensor.relative_humidity
-            except Exception as exc:  # transient [Errno 5] etc — drop handle, retry
-                last_exc = exc
-                self._sensor = None
-                time.sleep(0.2)
-                continue
-            if value and value > 0:
-                return value
-            # Implausible 0% (collision/garbage) — re-measure.
+    def _read_once(self):
+        """One reading, re-probing the bus if the handle was dropped."""
+        if self._sensor is None:
+            self._sensor = _make_sensor()
+        try:
+            return self._sensor.relative_humidity
+        except Exception:  # transient [Errno 5] etc - drop the handle so the
+            self._sensor = None  # next attempt re-probes
             time.sleep(0.2)
-        if last_exc:
-            raise last_exc
+            raise
+
+    def read(self):
+        """Return relative humidity (%), filtered.
+
+        Same treatment as temperature: a median of several reads with
+        implausible values dropped. The DHT20's bogus 0% -- which this driver
+        already rejected by hand -- is now just the bottom of the plausible
+        band, so both sensors reject bad values the same way.
+        """
+        return ambient.stable_reading(
+            self._read_once,
+            ambient.HUMIDITY_RANGE_PCT,
+            label="humidity",
+        )
         raise RuntimeError("humidity read returned 0% on every attempt")
 
 

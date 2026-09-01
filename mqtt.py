@@ -667,16 +667,26 @@ def send_discovery_messages(client):
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
 
-    # Config for Water Level Sensor
+    # The raw sensor reading: the gap from the sensor face down to the water, so
+    # it *grows* as the tank drains. "Water Level" read as though 4 cm meant a
+    # nearly empty tank when it means a full one. Water Depth / Water Remaining /
+    # Water Gallons are the numbers to actually look at; this one is kept because
+    # it is what the hardware reports and it is what the thresholds compare
+    # against, so it is worth being able to see when calibrating.
+    #
+    # Renaming only changes the display name -- object_id is pinned to unique_id,
+    # so the entity stays sensor.<id>_water_level and no dashboard breaks.
     TEMP_CONFIG_TOPIC = "homeassistant/sensor/gardyn/" + IDENTIFIER + "_water_level/config"
 
     temp_config_payload = {
-        "name": "Water Level",
+        "name": "Distance to Water",
         "unique_id": IDENTIFIER + "_water_level",
         "state_topic": BASE_TOPIC + "/water/level",
         "command_topic": BASE_TOPIC + "/water/level/get",
         "unit_of_measurement": "cm",
         "device_class": "distance",
+        "entity_category": "diagnostic",
+        "icon": "mdi:arrow-expand-down",
         "device": device_info,
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
