@@ -19,6 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Runs before anything else: a leaked credential is worth failing fast on,
+      # and this needs no toolchain. .gitignore does not help once a file is
+      # tracked -- adding the rule afterwards leaves the file in the index, which
+      # is exactly how a Home Assistant token reached a public PR here.
+      - name: No secret files may be tracked
+        run: |
+          set -euo pipefail
+          pattern='(^|/)(\.ha_token|.*\.token|.*\.pem|.*\.key|.*_rsa|\.env)$'
+          if git ls-files | grep -inE "$pattern"; then
+            echo "::error::The files above are secrets and must never be committed."
+            echo "Untrack with: git rm --cached <file>   (and rotate the credential —"
+            echo "anything that reached a remote must be treated as compromised)."
+            exit 1
+          fi
+          echo "No secret files tracked."
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
