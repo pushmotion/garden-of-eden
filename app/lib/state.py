@@ -20,11 +20,21 @@ DEFAULT_STATE = {
 
 
 def load_state():
+    """Return the persisted state, with DEFAULT_STATE filling any gaps.
+
+    Every key in the file is preserved, not only those in DEFAULT_STATE. The old
+    behaviour dropped anything else on load, so ``save_state(**changes)`` -- which
+    accepts any key -- would write a value that the next ``load_state`` silently
+    threw away. Nothing in tree relied on that yet, which is exactly why it was
+    worth fixing before something did.
+    """
     try:
         with open(config.STATE_FILE) as fh:
             data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("state file is not a JSON object")
         merged = dict(DEFAULT_STATE)
-        merged.update({k: data[k] for k in DEFAULT_STATE if k in data})
+        merged.update(data)
         return merged
     except (FileNotFoundError, ValueError):
         return dict(DEFAULT_STATE)
