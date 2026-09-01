@@ -70,6 +70,37 @@ class DiscoveryTestCase(unittest.TestCase):
             self.assertIn("device", data, f"{topic} missing device block")
             self.assertIn("identifiers", data["device"])
 
+    def test_every_entity_pins_its_object_id(self):
+        """Entity ids must be deterministic, not derived from the display name.
+
+        Without object_id, Home Assistant builds the entity_id from the name
+        under rules that vary by release and by whether the device name
+        collides with another device, so the same entity can land on different
+        ids across installs. Pinning it to unique_id gives every unit the same
+        <MQTT_IDENTIFIER>_<suffix> shape.
+        """
+        client = FakeClient()
+        self.mqtt.send_discovery_messages(client)
+        for topic, payload in client.published:
+            data = json.loads(payload)
+            self.assertIn("object_id", data, f"{topic} does not pin an object_id")
+            self.assertEqual(
+                data["object_id"],
+                data["unique_id"],
+                f"{topic} object_id must track unique_id",
+            )
+            self.assertTrue(
+                data["object_id"].startswith(self.mqtt.IDENTIFIER + "_"),
+                f"{topic} object_id must be namespaced by MQTT_IDENTIFIER",
+            )
+
+    def test_object_ids_are_unique(self):
+        """Two entities sharing an object_id would collide into `_2` suffixes."""
+        client = FakeClient()
+        self.mqtt.send_discovery_messages(client)
+        ids = [json.loads(p)["object_id"] for _, p in client.published]
+        self.assertEqual(len(ids), len(set(ids)), "duplicate object_id in discovery")
+
     def test_button_event_types(self):
         client = FakeClient()
         self.mqtt.send_discovery_messages(client)

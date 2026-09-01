@@ -36,6 +36,22 @@ class ConfigParsingTestCase(unittest.TestCase):
         cfg = self._reload(WATER_LOW_CM="0")
         self.assertIsNone(cfg.WATER_LOW_CM)
 
+    def test_base_topic_defaults_to_the_identifier(self):
+        """Each unit must get its own topic namespace by default.
+
+        mqtt.py subscribes to BASE_TOPIC + "/#", so two units sharing a base
+        topic receive each other's commands -- one tower's light switch would
+        drive both. Defaulting to the identifier makes that require deliberate
+        misconfiguration rather than being the out-of-the-box behaviour.
+        """
+        cfg = self._reload(MQTT_IDENTIFIER="gardyn_02")
+        self.assertEqual(cfg.BASE_TOPIC, "gardyn_02")
+
+    def test_base_topic_override_still_wins(self):
+        """An existing deployment can stay on its old topics."""
+        cfg = self._reload(MQTT_IDENTIFIER="gardyn_02", MQTT_BASETOPIC="gardyn")
+        self.assertEqual(cfg.BASE_TOPIC, "gardyn")
+
 
 if __name__ == "__main__":
     unittest.main()

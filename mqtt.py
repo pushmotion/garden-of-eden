@@ -356,6 +356,16 @@ def send_discovery_messages(client):
 
     def pub(topic, payload, availability=True):
         body = {**payload, **avail} if availability else dict(payload)
+        # Pin the entity_id rather than letting Home Assistant derive one.
+        # Without object_id, HA builds the id from the *display name*, under
+        # rules that vary by release and by whether the device name collides
+        # with another device -- so two installs can end up with different ids
+        # for the same entity, and a dashboard cannot be written from the code
+        # alone. Deriving it from unique_id makes every id
+        # <domain>.<MQTT_IDENTIFIER>_<suffix>: identical in shape on every unit,
+        # and immune to someone renaming the entity in the HA UI.
+        if "unique_id" in body:
+            body.setdefault("object_id", body["unique_id"])
         client.publish(topic, json.dumps(body), retain=True)
 
     # Config for Light
@@ -500,7 +510,6 @@ def send_discovery_messages(client):
         "image_topic": BASE_TOPIC + "/image/upper_camera",
         "encoding": "",
         "content_type": "image/jpeg",
-        "object_id": IDENTIFIER + "_upper_camera",
         "device": device_info,
     }
     # Image entities aren't gated on availability (the MQTT image platform
@@ -515,7 +524,6 @@ def send_discovery_messages(client):
         "image_topic": BASE_TOPIC + "/image/lower_camera",
         "encoding": "",
         "content_type": "image/jpeg",
-        "object_id": IDENTIFIER + "_lower_camera",
         "device": device_info,
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload, availability=False)
