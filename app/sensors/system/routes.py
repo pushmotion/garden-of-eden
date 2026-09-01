@@ -30,6 +30,9 @@ def get_system():
             "model": model,
             "profile": _profile_for(model),
             "sensor_type": config.SENSOR_TYPE,
+            # Presentation default for clients that have no preference of their
+            # own. Everything below is metric regardless -- see config.py.
+            "display_units": config.DISPLAY_UNITS,
             "water_low_cm": config.WATER_LOW_CM,
             "pump_cutoff_cm": water.pump_cutoff(config.PUMP_CUTOFF_CM, config.WATER_LOW_CM),
             # Tank geometry, so clients can label a reading without holding
