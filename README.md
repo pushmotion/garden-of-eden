@@ -279,9 +279,8 @@ Open two terminals on the gardyn pi, in one run:
 
 In the second gardyn pi terminal, run:
 
-`mosquitto_pub -t "gardyn/water/level/get" -m ""-r  -u gardyn -P "somepassword"`
+`mosquitto_pub -t "gardyn/water/level/get" -m "" -r -u gardyn -P "somepassword"`
 
-```
 
 ### Testing
 
@@ -295,12 +294,24 @@ Test options:
 # REST endpoints
 ./bin/api-test.sh
 
-# unit test
-python -m unittest -v
+# unit tests — note the `-t .` so the tests PACKAGE loads
+python -m unittest discover -t . -s tests -p 'test_*.py'
 
-# individual tests
-python tests/test_distance.py
+# individual test module
+python -m unittest tests.test_distance
 ```
+
+> Use the `discover -t . -s tests` form. The hardware-stub bootstrap that lets
+> the suite run without a Pi lives in the `tests` package `__init__`, so a plain
+> `python -m unittest` imports `app` directly and fails off-Pi with an import
+> error on `gpiozero`/`board`.
+>
+> Run the suite **off** the Pi. `tests/_hwstub.py` injects fakes only when the
+> real GPIO libs are *absent* — on a Pi they are present, the stubs disengage,
+> and importing the app instantiates real GPIO drivers on a live unit.
+>
+> `bin/api-test.sh` spins the pump motor (`control_pump 30`). Don't run it
+> unless the pump is submerged.
 
 ### Controlling Individual Sensors
 
