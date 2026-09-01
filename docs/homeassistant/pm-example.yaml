@@ -2,7 +2,7 @@
 #
 # One of two examples in this folder:
 #   pm-example.yaml        -- this file: grouped sections, status-first, and the
-#                             only one covering all 37 discovered entities
+#                             only one covering all 40 discovered entities
 #   lovelace-example.yaml  -- plain single-column card list (upstream style),
 #                             a 25-entity SUBSET; see its header for what it omits
 #
@@ -342,7 +342,7 @@ views:
             name: PCB Temperature
           - type: tile
             entity: sensor.gardyn_01_water_level
-            name: Sensor Distance
+            name: Distance to Water
 
       # ==================================================================
       # 6. CAMERAS
