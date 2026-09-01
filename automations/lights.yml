@@ -1,3 +1,21 @@
+# OPTIONAL ALTERNATIVE to the built-in scheduler -- do not run both.
+#
+# This fork schedules lights and pump runs itself: the web UI writes a schedule
+# to ~/.garden_schedule.json, app/sensors/schedule/schedule.py compiles it into
+# the Pi's crontab, and the "Lights Schedule" / "Pump Schedule" switches in Home
+# Assistant turn that on and off. Cron then drives the hardware directly.
+#
+# These automations do the same job from HA's side. Import them and the tower
+# has two schedulers with no knowledge of each other: cron sets the light from
+# the saved schedule, HA sets it again from the times below, and the actuator
+# reconcile loop faithfully publishes the resulting flapping.
+#
+# So: use these ONLY with the built-in schedule switched off (Lights Schedule /
+# Pump Schedule OFF, or lights.enabled / pump.enabled false in the schedule
+# file). For anything per-day or multi-window, prefer the built-in scheduler --
+# it survives a reboot without HA and is what the web UI edits.
+#
+# Entity ids assume MQTT_IDENTIFIER=gardyn_01; porting is a find/replace.
 description: Schedule for Gardyn light control
 trigger:
   - platform: time

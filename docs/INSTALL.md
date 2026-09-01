@@ -98,7 +98,8 @@ Then open the web UI from any device on the network: **http://gardyn.local:5000/
 Have an MQTT broker (mosquitto on the Pi or on HA). With `.env` MQTT creds set and
 `mqtt.service` running, the device **auto-discovers** in HA with all entities
 (light, pump, temp, humidity, PCB temp, water level + low alert, cameras, button).
-Dashboard example: `docs/homeassistant/lovelace-example.yaml`.
+Dashboard examples: `docs/homeassistant/pm-example.yaml` covers every discovered
+entity; `lovelace-example.yaml` is a shorter 25-entity subset.
 
 ## Safety / recovery
 

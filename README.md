@@ -175,9 +175,14 @@ CLI and cron — and is now surfaced read-only as `Max Pump Run Time`.
   this cannot be done with `curl`. Dry run by default.
 - **Dashboards:** [`pm-example.yaml`](docs/homeassistant/pm-example.yaml) is a
   Sections layout grouped by function (status first, then lighting, pump,
-  one-time runs, environment, cameras, diagnostics);
-  [`lovelace-example.yaml`](docs/homeassistant/lovelace-example.yaml) is the
-  simpler plain card list.
+  one-time runs, environment, cameras, diagnostics) and covers all 37 discovered
+  entities. [`lovelace-example.yaml`](docs/homeassistant/lovelace-example.yaml)
+  is a plain card list and a **25-entity subset** — no one-time pump runs, no
+  derived water readings, no refresh controls. Its header lists the omissions.
+- **Automations:** [`automations/`](automations/) holds optional HA time
+  triggers for the light and pump. They are an *alternative* to the built-in
+  scheduler, not a companion — running both leaves cron and HA fighting over the
+  same actuator.
 
 ### 5. Web UI
 
