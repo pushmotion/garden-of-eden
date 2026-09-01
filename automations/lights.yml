@@ -19,7 +19,7 @@ trigger:
 action:
   - service: light.turn_{{trigger.id}}
     target:
-      entity_id: light.gardyn_light
+      entity_id: light.gardyn_01_light
     data: >
       {% if trigger.id == "on" %}
         {"brightness_pct": {{brightness_pct}} }

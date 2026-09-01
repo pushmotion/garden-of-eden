@@ -222,12 +222,73 @@ That editor *replaces* the whole dashboard, so if the target dashboard already
 holds cards for anything else, paste the `views:` entry into your existing config
 instead of overwriting the file wholesale.
 
-Entity ids are built by HA as `<domain>.<device>_<entity name>`, where the device
-is named after `MQTT_BASETOPIC` (`gardyn`) — so the file says
-`sensor.gardyn_water_depth`. The two cameras are the exception: their discovery
-payloads set `object_id`, so they carry `MQTT_IDENTIFIER` (`gardyn_01`). If your
-base topic differs, one find/replace of `gardyn_` covers the file. Check anything
-uncertain in Developer Tools → States, filtered on `gardyn`.
+### Entity ids are pinned, not derived
+
+Every discovery payload sets `object_id` to its `unique_id`, so entity ids are
+always `<domain>.<MQTT_IDENTIFIER>_<suffix>` — `sensor.gardyn_01_water_depth`.
+
+Left to itself, HA derives the id from the *display name* under rules that vary
+by release and by whether the device name collides with another device. This
+tower demonstrated the failure: it ended up with both `sensor.gardyn_temperature`
+and `sensor.gardyn_1_gardyn_water_depth`, depending on when each entity was first
+seen. Pinning the id removes HA's naming rules from the equation, and means
+retitling an entity in the UI can never move it out from under a dashboard.
+
+The suffix is the `unique_id`, which is not always the display-name slug —
+"Water Remaining" is `sensor.<id>_water_percent`, "PCB Temperature" is
+`sensor.<id>_pcb_temp`, "Add Plant Food" is `binary_sensor.<id>_food`. Generate
+the definitive list for any identifier with:
+
+```bash
+python - <<'PY'
+import json, tests, mqtt          # tests/ loads the hardware stubs
+class C:
+    def __init__(self): self.pub = []
+    def publish(self, topic, payload=None, **kw): self.pub.append((topic, payload))
+c = C(); mqtt.send_discovery_messages(c)
+for t, p in sorted(c.pub):
+    d = json.loads(p); print(f'{t.split("/")[1]}.{d["object_id"]:40} {d["name"]}')
+PY
+```
+
+### Migrating a tower that HA already discovered
+
+`object_id` only applies when an entity is **first created**. HA matches on
+`unique_id`, which is unchanged, so an already-registered entity keeps its old
+id forever. To adopt the pinned ids on a tower HA has already seen:
+
+1. Settings → Devices & Services → **MQTT** → the Gardyn device → ⋮ → **Delete**
+2. It reappears within seconds — discovery configs are retained on the broker,
+   so HA re-creates every entity, this time honouring `object_id`
+3. Paste the dashboard
+
+What this costs: recorder history and long-term statistics stay attached to the
+old ids and are eventually purged, and any automation, script or dashboard
+referencing an old id must be repointed. Entity customisations (renames, area
+assignment, hidden/disabled flags) are lost with the registry entries. Nothing
+on the Pi is affected — the schedule, grow state and crontab live outside HA.
+
+### Running more than one tower
+
+Pinned ids make the *entities* unambiguous, but two towers still need separate
+**topic namespaces**, because `mqtt.py` subscribes to `BASE_TOPIC + "/#"` and
+every state/command topic hangs off `BASE_TOPIC`. Two units both on the default
+`MQTT_BASETOPIC=gardyn` would receive each other's commands — turning on one
+tower's light would turn on both.
+
+Per tower, set **both**, to the same value:
+
+```ini
+MQTT_IDENTIFIER=gardyn_02     # namespaces entity ids + discovery object_ids
+MQTT_BASETOPIC=gardyn_02      # namespaces state/command topics and the HA device name
+```
+
+The dashboard then ports by find/replacing `gardyn_01` with `gardyn_02`. Lovelace
+is static YAML and does not auto-populate for a new device — one view per tower
+is the straightforward approach. For dashboards that genuinely adapt on their
+own, the HACS cards `auto-entities` (match `sensor.gardyn_*` and let cards fill
+themselves) and `decluttering-card` (define the tower layout once, instantiate it
+per identifier) are the usual answers; both are third-party.
 
 ## Scheduling
 
