@@ -56,7 +56,16 @@ def pump_allowed(state=None, now=None):
 
 
 def main(argv=None):
-    allowed, reason = pump_allowed()
+    # A backstop, not decoration. Every branch inside pump_allowed() fails open
+    # deliberately, so an *unhandled* exception escaping to here would be the
+    # only path that fails closed -- and a crash withholding water indefinitely
+    # is worse than the dry-run risk this guard exists to manage. Whatever went
+    # wrong, say so and let the run proceed.
+    try:
+        allowed, reason = pump_allowed()
+    except Exception as exc:  # noqa: BLE001 - deliberately broad; see above
+        print(f"water guard failed ({exc!r}); allowing the run", file=sys.stderr)
+        return ALLOW
     stream = sys.stdout if allowed else sys.stderr
     print(reason, file=stream)
     return ALLOW if allowed else REFUSE

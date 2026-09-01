@@ -10,6 +10,7 @@ number means *less* water.
 
 import unittest
 from datetime import datetime, timedelta
+from unittest import mock
 
 from app.lib.water import is_reading_fresh, is_water_low, pump_cutoff
 
@@ -137,3 +138,44 @@ class WaterGuardDecisionTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuardFailsOpenTestCase(unittest.TestCase):
+    """The guard must never fail closed.
+
+    Every branch inside pump_allowed() allows the run when it cannot decide.
+    An exception escaping to main() would be the one path that refuses instead,
+    and a crash that withholds water indefinitely is worse than the dry-run risk
+    the guard manages. Found on real hardware: an offset-aware timestamp in the
+    state file raised TypeError, and a *stale* block -- which must fail open --
+    exited 1 and refused to water.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from app.lib import water_guard
+
+        cls.guard = water_guard
+
+    def test_an_offset_aware_timestamp_is_compared_correctly(self):
+        """Converted to local naive rather than raising -- or being discarded."""
+        now = datetime(2026, 9, 1, 12, 0, 0)
+        # Built in the machine's own zone so the assertion holds anywhere.
+        aware = (now - timedelta(seconds=30)).astimezone().isoformat()
+        self.assertTrue(is_reading_fresh(aware, now, 540))
+
+        old = (now - timedelta(hours=6)).astimezone().isoformat()
+        self.assertFalse(is_reading_fresh(old, now, 540))
+
+    def test_an_aware_stale_block_still_allows_the_run(self):
+        now = datetime(2026, 9, 1, 12, 0, 0)
+        old = (now - timedelta(hours=6)).astimezone().isoformat()
+        allowed, _ = self.guard.pump_allowed(
+            {"pump_blocked": True, "water_checked_at": old, "water_airgap_cm": 19.2},
+            now=now,
+        )
+        self.assertTrue(allowed, "a stale block must never withhold water")
+
+    def test_main_allows_when_pump_allowed_raises(self):
+        with mock.patch.object(self.guard, "pump_allowed", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.guard.ALLOW, self.guard.main())
