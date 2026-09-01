@@ -139,15 +139,49 @@ def _safety_pump_off():
         logger.error("Safety pump-off failed: %s", exc)
 
 
-def _arm_pump_safety():
-    """(Re)arm the auto-off timer whenever the pump is energized."""
+def _start_pump_timer_locked():
+    """Replace the auto-off timer. Caller must hold ``_pump_timer_lock``."""
     global _pump_off_timer
+    if _pump_off_timer is not None:
+        _pump_off_timer.cancel()
+    _pump_off_timer = Timer(MAX_PUMP_RUN_SECONDS, _safety_pump_off)
+    _pump_off_timer.daemon = True
+    _pump_off_timer.start()
+
+
+def _pump_safety_pending_locked():
+    """True when a timer is still counting down (not yet fired or cancelled)."""
+    return _pump_off_timer is not None and not _pump_off_timer.finished.is_set()
+
+
+def _arm_pump_safety():
+    """(Re)start the cap because *we* just energized the pump.
+
+    Unconditional: a fresh command restarts the clock, so holding the speed
+    slider does not inherit the remainder of an earlier run's deadline.
+    """
     with _pump_timer_lock:
-        if _pump_off_timer is not None:
-            _pump_off_timer.cancel()
-        _pump_off_timer = Timer(MAX_PUMP_RUN_SECONDS, _safety_pump_off)
-        _pump_off_timer.daemon = True
-        _pump_off_timer.start()
+        _start_pump_timer_locked()
+
+
+def _ensure_pump_safety_armed():
+    """Cover a pump we merely *observed* running, without extending its deadline.
+
+    The command paths call ``_arm_pump_safety``; this is for the reconcile loop,
+    which sees the pump energized by cron, the REST API, or a ``water.sh`` that
+    was killed before its EXIT trap could fire. Those never reach this service,
+    so nothing else is holding a deadline for them.
+
+    It must not re-arm an already-pending timer. Polling every
+    ``ACTUATOR_POLL_SECONDS`` and re-arming each tick would push the deadline out
+    forever and the cap would never fire -- the opposite of the guarantee.
+    Returns True only when it actually started one, so the caller can log it.
+    """
+    with _pump_timer_lock:
+        if _pump_safety_pending_locked():
+            return False
+        _start_pump_timer_locked()
+    return True
 
 
 def _cancel_pump_safety():
@@ -1553,6 +1587,28 @@ def reconcile_actuator_state(client):
 
             light_pct = _live_duty_percent(light)
             pump_pct = _live_duty_percent(pump)
+
+            # The cap belongs to the pump being ON, not to whoever turned it on.
+            # cron, the REST API and a water.sh killed before its EXIT trap can
+            # all leave the pump energized with nobody holding a deadline for it.
+            #
+            # Deliberately outside the change-guard below: a *failed* auto-off
+            # leaves the duty cycle unchanged, so a check that only ran on change
+            # would never notice and the pump would run on unattended.
+            # _ensure_pump_safety_armed() will not extend a pending timer, so
+            # polling this cannot push the deadline out. A None reading (pigpio
+            # unavailable) means "unknown" and is left alone.
+            if pump_pct:
+                if _ensure_pump_safety_armed():
+                    logger.warning(
+                        "Pump running at %s%% with no safety cap pending "
+                        "(started outside this service); armed the %ss cap",
+                        pump_pct,
+                        MAX_PUMP_RUN_SECONDS,
+                    )
+            elif pump_pct == 0:
+                _cancel_pump_safety()
+
             snapshot = (light_pct, pump_pct)
             if None not in snapshot and snapshot != last:
                 # Published straight from the polled percentages rather than via a
