@@ -7,13 +7,28 @@
 # Paste into: Settings -> Dashboards -> (your dashboard) -> Edit -> (three dots)
 # -> "Raw configuration editor". This replaces the whole dashboard config.
 #
-# Entity IDs assume MQTT_BASETOPIC=gardyn. MQTT discovery builds entity ids as
-# <domain>.<device>_<entity name>, and the HA device is named after the base
-# topic -- so "Water Depth" becomes sensor.gardyn_water_depth. Verify in
-# Developer Tools -> States by filtering on "gardyn"; if your base topic
-# differs, one find/replace of "gardyn_" fixes the whole file. The two cameras
-# are the exception -- their discovery payloads set object_id, so they carry
-# MQTT_IDENTIFIER (gardyn_01) instead.
+# PORTING THIS TO ANOTHER TOWER: find/replace "gardyn_01" with that unit's
+# MQTT_IDENTIFIER. Nothing else changes.
+#
+# Every discovery payload pins object_id to its unique_id, so entity ids are
+# always <domain>.<MQTT_IDENTIFIER>_<suffix> -- identical in shape on every
+# tower, and immune to renaming an entity in the HA UI. The suffix is the
+# unique_id, which is not always the slug of the display name:
+#
+#   Water Remaining  -> sensor.<id>_water_percent
+#   PCB Temperature  -> sensor.<id>_pcb_temp
+#   Add Plant Food   -> binary_sensor.<id>_food
+#   Last Refresh     -> sensor.<id>_refresh_last
+#   Last Log         -> sensor.<id>_log
+#   Lights Schedule  -> switch.<id>_sched_lights
+#
+# That is deliberate: the display name is cosmetic, the unique_id is the
+# contract, and an entity must not move because someone retitled it.
+#
+# NOTE: object_id only takes effect when an entity is FIRST created. A tower
+# that was discovered before this change keeps its old ids until its device is
+# deleted in HA and re-discovered -- see "Home Assistant dashboard" in
+# docs/DEPLOYMENT.md.
 #
 # Sections require HA 2024.3+. Drag section headers to reorder, drag cards
 # between sections, and resize cards from the edit view.
@@ -28,14 +43,14 @@ views:
     # The few things worth seeing before you scroll.
     badges:
       - type: entity
-        entity: binary_sensor.gardyn_water_low
+        entity: binary_sensor.gardyn_01_water_low
         color: red
       - type: entity
-        entity: sensor.gardyn_water_remaining
+        entity: sensor.gardyn_01_water_percent
       - type: entity
-        entity: sensor.gardyn_next_pump_run
+        entity: sensor.gardyn_01_pump_next_run
       - type: entity
-        entity: sensor.gardyn_grow_day
+        entity: sensor.gardyn_01_grow_day
 
     sections:
 
@@ -59,13 +74,13 @@ views:
             icon: mdi:water
 
           - type: tile
-            entity: binary_sensor.gardyn_water_low
+            entity: binary_sensor.gardyn_01_water_low
             name: Water Low
             icon: mdi:water-alert
             color: red
 
           - type: gauge
-            entity: sensor.gardyn_water_remaining
+            entity: sensor.gardyn_01_water_percent
             name: Water Remaining
             min: 0
             max: 100
@@ -76,12 +91,12 @@ views:
               red: 0
 
           - type: tile
-            entity: sensor.gardyn_water_depth
+            entity: sensor.gardyn_01_water_depth
             name: Water Depth
             icon: mdi:waves-arrow-up
 
           - type: tile
-            entity: sensor.gardyn_water_gallons
+            entity: sensor.gardyn_01_water_gallons
             name: Estimated Gallons
             icon: mdi:cup-water
 
@@ -91,9 +106,9 @@ views:
             title: Low-water alert
             show_header_toggle: false
             entities:
-              - entity: number.gardyn_set_water_low_threshold
+              - entity: number.gardyn_01_water_low_cm
                 name: Trip below (cm)
-              - entity: sensor.gardyn_water_low_mode
+              - entity: sensor.gardyn_01_water_low_mode
                 name: Detection mode
 
           # ---- Grow cycle ------------------------------------------------
@@ -103,30 +118,30 @@ views:
             icon: mdi:sprout
 
           - type: tile
-            entity: select.gardyn_grow_stage
+            entity: select.gardyn_01_grow_stage
             name: Grow Stage
             icon: mdi:sprout
             features:
               - type: select-options
 
           - type: tile
-            entity: sensor.gardyn_grow_day
+            entity: sensor.gardyn_01_grow_day
             name: Grow Day
             icon: mdi:calendar-clock
 
           - type: tile
-            entity: binary_sensor.gardyn_add_plant_food
+            entity: binary_sensor.gardyn_01_food
             name: Add Plant Food
             icon: mdi:bottle-tonic-plus
             color: amber
 
           - type: tile
-            entity: sensor.gardyn_grow_reminder
+            entity: sensor.gardyn_01_grow_reminder
             name: Reminder
             icon: mdi:bell-alert
 
           - type: tile
-            entity: button.gardyn_start_new_grow_cycle
+            entity: button.gardyn_01_grow_start
             name: Start New Grow Cycle
             icon: mdi:restart
             tap_action:
@@ -141,7 +156,7 @@ views:
             icon: mdi:airplane
 
           - type: tile
-            entity: switch.gardyn_vacation_mode
+            entity: switch.gardyn_01_vacation
             name: Vacation Mode
             icon: mdi:airplane
 
@@ -162,7 +177,7 @@ views:
             icon: mdi:lightbulb-on-outline
 
           - type: tile
-            entity: light.gardyn_light
+            entity: light.gardyn_01_light
             name: Grow Light
             icon: mdi:white-balance-sunny
             features_position: bottom
@@ -177,13 +192,13 @@ views:
           - type: entities
             show_header_toggle: false
             entities:
-              - entity: switch.gardyn_lights_schedule
+              - entity: switch.gardyn_01_sched_lights
                 name: Schedule enabled
-              - entity: time.gardyn_lights_on_time
+              - entity: time.gardyn_01_sched_lights_on
                 name: Lights on
-              - entity: time.gardyn_lights_off_time
+              - entity: time.gardyn_01_sched_lights_off
                 name: Lights off
-              - entity: number.gardyn_schedule_brightness
+              - entity: number.gardyn_01_sched_lights_brightness
                 name: Brightness
 
           - type: markdown
@@ -208,7 +223,7 @@ views:
             icon: mdi:water-pump
 
           - type: tile
-            entity: light.gardyn_pump
+            entity: light.gardyn_01_pump
             name: Pump
             icon: mdi:water-pump
             features_position: bottom
@@ -224,16 +239,16 @@ views:
           - type: entities
             show_header_toggle: false
             entities:
-              - entity: switch.gardyn_pump_schedule
+              - entity: switch.gardyn_01_sched_pump
                 name: Schedule enabled
-              - entity: time.gardyn_pump_run_time
+              - entity: time.gardyn_01_sched_pump_time
                 name: First run at
-              - entity: number.gardyn_pump_run_duration
+              - entity: number.gardyn_01_sched_pump_duration
                 name: Minutes per run
               - type: divider
-              - entity: sensor.gardyn_next_pump_run
+              - entity: sensor.gardyn_01_pump_next_run
                 name: Next run
-              - entity: sensor.gardyn_max_pump_run_time
+              - entity: sensor.gardyn_01_pump_max_seconds
                 name: Hard cap per run
 
           - type: markdown
@@ -259,12 +274,12 @@ views:
           - type: entities
             show_header_toggle: false
             entities:
-              - entity: time.gardyn_manual_pump_run_time
+              - entity: time.gardyn_01_sched_pump_manual_time
                 name: Run at
-              - entity: button.gardyn_one_time_pump_run
+              - entity: button.gardyn_01_pump_run_once
                 name: Arm one-time run
               - type: divider
-              - entity: sensor.gardyn_pending_one_time_pump_run
+              - entity: sensor.gardyn_01_pump_once_next
                 name: Pending run
 
           - type: markdown
@@ -285,16 +300,16 @@ views:
             icon: mdi:thermometer
 
           - type: tile
-            entity: sensor.gardyn_temperature
+            entity: sensor.gardyn_01_temperature
             name: Air Temperature
           - type: tile
-            entity: sensor.gardyn_humidity
+            entity: sensor.gardyn_01_humidity
             name: Humidity
           - type: tile
-            entity: sensor.gardyn_pcb_temperature
+            entity: sensor.gardyn_01_pcb_temp
             name: PCB Temperature
           - type: tile
-            entity: sensor.gardyn_water_level
+            entity: sensor.gardyn_01_water_level
             name: Sensor Distance
 
       # ==================================================================
@@ -332,20 +347,20 @@ views:
           - type: entities
             show_header_toggle: false
             entities:
-              - entity: button.gardyn_refresh_all
+              - entity: button.gardyn_01_refresh_all
                 name: Refresh all sensors
-              - entity: sensor.gardyn_refresh_status
+              - entity: sensor.gardyn_01_refresh_status
                 name: Refresh status
-              - entity: sensor.gardyn_last_refresh
+              - entity: sensor.gardyn_01_refresh_last
                 name: Last refresh
               - type: divider
-              - entity: event.gardyn_button
+              - entity: event.gardyn_01_button
                 name: Physical button
-              - entity: sensor.gardyn_last_log
+              - entity: sensor.gardyn_01_log
                 name: Last warning/error
 
 # Example automation: notify when the physical button is held.
-# (The button is exposed as event.gardyn_button with types single/double/long.)
+# (The button is exposed as event.gardyn_01_button with types single/double/long.)
 # Automations live in HA's own config, not in a dashboard -- add this via
 # Settings -> Automations, or automations.yaml, not by pasting it here.
 #
@@ -353,7 +368,7 @@ views:
 #   - alias: Gardyn button long-press notify
 #     trigger:
 #       - platform: state
-#         entity_id: event.gardyn_button
+#         entity_id: event.gardyn_01_button
 #         attribute: event_type
 #         to: "long"
 #     action:

@@ -3,15 +3,18 @@
 # A plain single-column card list. For a grouped, status-first layout using
 # HA's Sections view, see pm-example.yaml in this folder.
 #
-# All entities are created automatically via MQTT discovery by mqtt.py. HA
-# builds each entity_id as <domain>.<device>_<entity name>, where the device is
-# named after MQTT_BASETOPIC (default "gardyn") -- so the "Water Depth" sensor
-# is sensor.gardyn_water_depth. Note this is the *base topic*, not
-# MQTT_IDENTIFIER, and it is the entity's display name that is slugified, not
-# its unique_id. The two cameras are the exception: their discovery payloads
-# set object_id, so they carry MQTT_IDENTIFIER (default "gardyn-xx", "gardyn_01"
-# on the PushMotion tower). Verify anything you are unsure of in
-# Developer Tools → States, filtered on "gardyn".
+# All entities are created automatically via MQTT discovery by mqtt.py, which
+# pins each object_id to its unique_id. Entity ids are therefore always
+# <domain>.<MQTT_IDENTIFIER>_<suffix> -- the ids below assume the default
+# "gardyn_01", so porting to another tower is a find/replace of that.
+#
+# The suffix is the unique_id, not always the display-name slug: "Water
+# Remaining" is sensor.gardyn_01_water_percent, "PCB Temperature" is
+# sensor.gardyn_01_pcb_temp. See pm-example.yaml for the full list.
+#
+# object_id only applies when an entity is FIRST created, so a tower discovered
+# before that change keeps its old ids until its HA device is deleted and
+# re-discovered — see docs/DEPLOYMENT.md.
 #
 # Paste into a dashboard via: Settings → Dashboards → (⋮) → Edit → Raw config.
 
@@ -22,39 +25,39 @@ views:
       - type: entities
         title: Controls
         entities:
-          - entity: light.gardyn_light
+          - entity: light.gardyn_01_light
             name: Grow Light
-          - entity: light.gardyn_pump
+          - entity: light.gardyn_01_pump
             name: Pump
-          - entity: number.gardyn_set_water_low_threshold
+          - entity: number.gardyn_01_water_low_cm
             name: Low-water threshold (cm)
 
       - type: glance
         title: Sensors
         entities:
-          - entity: sensor.gardyn_temperature
+          - entity: sensor.gardyn_01_temperature
             name: Air Temp
-          - entity: sensor.gardyn_humidity
+          - entity: sensor.gardyn_01_humidity
             name: Humidity
-          - entity: sensor.gardyn_pcb_temperature
+          - entity: sensor.gardyn_01_pcb_temp
             name: PCB Temp
-          - entity: sensor.gardyn_water_level
+          - entity: sensor.gardyn_01_water_level
             name: Water Level
-          - entity: binary_sensor.gardyn_water_low
+          - entity: binary_sensor.gardyn_01_water_low
             name: Water Low
 
       - type: entities
         title: Grow Cycle
         entities:
-          - entity: select.gardyn_grow_stage
+          - entity: select.gardyn_01_grow_stage
             name: Stage
-          - entity: sensor.gardyn_grow_day
+          - entity: sensor.gardyn_01_grow_day
             name: Day
-          - entity: sensor.gardyn_grow_reminder
+          - entity: sensor.gardyn_01_grow_reminder
             name: Reminder
-          - entity: binary_sensor.gardyn_add_plant_food
+          - entity: binary_sensor.gardyn_01_food
             name: Add plant food
-          - entity: button.gardyn_start_new_grow_cycle
+          - entity: button.gardyn_01_grow_start
             name: Start new cycle
 
       - type: entities
@@ -68,21 +71,21 @@ views:
         # A scalar cannot express the later windows/runs, so add, remove, or
         # retime those in the web UI heatmap (http://gardyn.local:5000/).
         entities:
-          - entity: switch.gardyn_lights_schedule
+          - entity: switch.gardyn_01_sched_lights
             name: Lights schedule
-          - entity: time.gardyn_lights_on_time
+          - entity: time.gardyn_01_sched_lights_on
             name: Lights on
-          - entity: time.gardyn_lights_off_time
+          - entity: time.gardyn_01_sched_lights_off
             name: Lights off
-          - entity: number.gardyn_schedule_brightness
+          - entity: number.gardyn_01_sched_lights_brightness
             name: Brightness
-          - entity: switch.gardyn_pump_schedule
+          - entity: switch.gardyn_01_sched_pump
             name: Pump schedule
-          - entity: time.gardyn_pump_run_time
+          - entity: time.gardyn_01_sched_pump_time
             name: Pump run at
-          - entity: number.gardyn_pump_run_duration
+          - entity: number.gardyn_01_sched_pump_duration
             name: Pump minutes
-          - entity: switch.gardyn_vacation_mode
+          - entity: switch.gardyn_01_vacation
             name: Vacation mode
 
       - type: picture-entity
@@ -96,13 +99,13 @@ views:
         camera_view: auto
 
 # Example automation: flash a notification when the physical button is held.
-# (The button is exposed as event.gardyn_button with types single/double/long.)
+# (The button is exposed as event.gardyn_01_button with types single/double/long.)
 #
 # automation:
 #   - alias: Gardyn button long-press notify
 #     trigger:
 #       - platform: state
-#         entity_id: event.gardyn_button
+#         entity_id: event.gardyn_01_button
 #         attribute: event_type
 #         to: "long"
 #     action:
