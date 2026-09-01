@@ -4,21 +4,12 @@
 
 Truly own that which is yours!
 
-> ### This is the PushMotion fork
+> Firmware for a **Gardyn** hydroponic tower on a Raspberry Pi.
 >
-> Firmware for a **Gardyn** hydroponic tower on a Raspberry Pi. This fork tracks
-> upstream [`iot-root/garden-of-eden`](https://github.com/iot-root/garden-of-eden)
-> 2.0.0 and adds pump-control fixes, actuator-state correctness, non-destructive
-> scheduling, deterministic Home Assistant entity ids, and multi-tower support.
-> **[What this fork adds](#what-this-fork-adds)** documents every change.
->
-> - **Build branch:** `feat/gardyn-tower-local` — the full stack the towers run.
->   `main` is kept a pure mirror of `upstream/main`.
-> - **Running a tower?** Read [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) first. It
->   covers the water calibration, the two ways to take a wrong sensor reading,
->   where tests may safely run (**never on the Pi**), and the open items.
-> - **Upstream `main` is not safe to run** on a tower: it reintroduces three pump
->   defects described [below](#1-pump-control-was-unusable-from-home-assistant).
+> Since 2.0.0 this adds pump-control fixes, actuator state that reflects the
+> hardware, non-destructive schedule edits, a dry-run guard on every watering
+> path, deterministic Home Assistant entity ids, and multi-tower support.
+> **[What's new](#whats-new-since-200)** documents every change and why.
 
 If you are interested in collaborating please review the [CONTRIBUTORS](CONTRIBUTORS.md) for commit styling guides.
 
@@ -48,8 +39,7 @@ A broad overhaul closing out the open milestones:
   is reachable at `gardyn.local` right after flashing.
 
 > Installing on a Pi? Follow [`docs/INSTALL.md`](docs/INSTALL.md) — a step-by-step,
-> brick-safe handoff (dry-run, backups, uninstall). On this fork the code is on
-> **`feat/gardyn-tower-local`**, not `main`.
+> brick-safe handoff (dry-run, backups, uninstall).
 - **Self-sufficient REST API** — camera, scheduling, grow-cycle, and system/model
   endpoints (see below), with optional API-key auth.
 - **Home Assistant** — the physical button is now an HA `event` entity
@@ -66,15 +56,14 @@ A broad overhaul closing out the open milestones:
 See [`docs/design.md`](docs/design.md) for architecture, and
 [`docs/maintenance.md`](docs/maintenance.md) for upkeep.
 
-## What this fork adds
+## What's new since 2.0.0
 
-30 commits on top of upstream 2.0.0, across 35 files. Grouped by what they fix
-or add, with the reasoning where the behaviour is non-obvious.
+Grouped by what each change fixes or adds, with the reasoning where the
+behaviour is non-obvious.
 
 ### 1. Pump control was unusable from Home Assistant
 
-Three defects that compound each other. All three are still present upstream, so
-a tower must not track `iot-root` `main`.
+Three defects that compounded each other.
 
 | # | Defect | Effect |
 |---|--------|--------|
@@ -84,8 +73,7 @@ a tower must not track `iot-root` `main`.
 
 The interaction is what makes this severe: (1) and (2) make the button look
 broken, so the slider is exactly what a user reaches for — and the slider is the
-one path that could run the pump dry. Proposed upstream as
-[`iot-root/garden-of-eden#95`](https://github.com/iot-root/garden-of-eden/pull/95).
+one path that could run the pump dry.
 
 ### 2. Actuator state now reflects the hardware
 
@@ -173,7 +161,7 @@ CLI and cron — and is now surfaced read-only as `Max Pump Run Time`.
   beats deleting the device: the registry entry survives, so recorder history and
   long-term statistics follow the entity. Registry writes are websocket-only, so
   this cannot be done with `curl`. Dry run by default.
-- **Dashboards:** [`pm-example.yaml`](docs/homeassistant/pm-example.yaml) is a
+- **Dashboards:** [`sections-example.yaml`](docs/homeassistant/sections-example.yaml) is a
   Sections layout grouped by function (status first, then lighting, pump,
   one-time runs, environment, cameras, diagnostics) and covers all 37 discovered
   entities. [`lovelace-example.yaml`](docs/homeassistant/lovelace-example.yaml)
@@ -208,10 +196,8 @@ the cycle start, so acknowledging one does not immediately re-fire it.
 
 ### 7. Testing and ops
 
-- **185+ tests**, up from 126 on upstream `main`, including offline HA discovery validation,
+- **185+ tests**, up from 126, including offline HA discovery validation,
   MQTT control-path tests, and schedule regression tests.
-- `docs/DEPLOYMENT.md` documents the branch model, water calibration and how to
-  redo it, the two ways to take a wrong sensor reading, and the open items.
 
 > **Tests must never run on the Pi.** `tests/_hwstub.py` injects fakes only when
 > the real GPIO libs are *absent*, and `app/__init__.py` imports every sensor
@@ -274,7 +260,7 @@ See [`docs/simulator.md`](docs/simulator.md).
 
 - [Garden of Eden](#garden-of-eden)
   - [Project Status \& Milestones](#project-status--milestones)
-  - [What this fork adds](#what-this-fork-adds)
+  - [What's new since 2.0.0](#whats-new-since-200)
     - [1. Pump control was unusable from Home Assistant](#1-pump-control-was-unusable-from-home-assistant)
     - [2. Actuator state now reflects the hardware](#2-actuator-state-now-reflects-the-hardware)
     - [3. Scheduling: scalar edits no longer destroy a schedule](#3-scheduling-scalar-edits-no-longer-destroy-a-schedule)
@@ -408,7 +394,7 @@ PY
 
 **Running more than one tower:** set `MQTT_IDENTIFIER` per unit and leave
 `MQTT_BASETOPIC` unset. Two towers sharing a base topic would receive each
-other's commands. See [Running more than one tower](docs/DEPLOYMENT.md).
+other's commands.
 
 Example dashboards live in [`docs/homeassistant/`](docs/homeassistant/).
 
@@ -791,7 +777,7 @@ Using `gpiozero` to leverage `pigpio` daemon which is hardware driven and more e
 │   └── api-test.sh         curls every REST endpoint (spins the pump)
 ├── simulator               full stack with stateful fake hardware, off-Pi
 ├── services                systemd unit, mosquitto + telegraf configs, udev rules
-├── docs                    DEPLOYMENT.md, INSTALL.md, design, access, homeassistant/
+├── docs                    INSTALL.md, design, access, homeassistant/
 └── tests                   185+ tests; _hwstub.py fakes GPIO when libs are absent
 ```
 

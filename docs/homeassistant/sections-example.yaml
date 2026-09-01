@@ -1,10 +1,10 @@
-# PushMotion example dashboard -- Home Assistant "Sections" layout.
+# Example dashboard -- Home Assistant "Sections" layout (issue #63).
 #
 # One of two examples in this folder:
-#   pm-example.yaml        -- this file: grouped sections, status-first, and the
+#   sections-example.yaml  -- this file: grouped sections, status-first, and the
 #                             only one covering all 37 discovered entities
-#   lovelace-example.yaml  -- plain single-column card list (upstream style),
-#                             a 25-entity SUBSET; see its header for what it omits
+#   lovelace-example.yaml  -- plain single-column card list, a 25-entity SUBSET;
+#                             see its header for what it omits
 #
 # Prefer this file unless you specifically want the shorter starting point.
 #
@@ -31,8 +31,8 @@
 #
 # NOTE: object_id only takes effect when an entity is FIRST created. A tower
 # that was discovered before this change keeps its old ids until its device is
-# deleted in HA and re-discovered -- see "Home Assistant dashboard" in
-# docs/DEPLOYMENT.md.
+# deleted in HA and re-discovered. bin/ha-align-entity-ids.py renames them in
+# place instead, which keeps recorder history attached to the entity.
 #
 # Sections require HA 2024.3+. Drag section headers to reorder, drag cards
 # between sections, and resize cards from the edit view.

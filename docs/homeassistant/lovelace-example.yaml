@@ -3,7 +3,7 @@
 # A plain single-column card list, kept as the simplest possible starting point.
 #
 # THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 25 of the 37 entities
-# mqtt.py discovers. If you want the whole device, use pm-example.yaml in this
+# mqtt.py discovers. If you want the whole device, use sections-example.yaml in this
 # folder; it is the dashboard these towers actually run.
 #
 # Not shown here:
@@ -25,11 +25,11 @@
 #
 # The suffix is the unique_id, not always the display-name slug: "Water
 # Remaining" is sensor.gardyn_01_water_percent, "PCB Temperature" is
-# sensor.gardyn_01_pcb_temp. See pm-example.yaml for the full list.
+# sensor.gardyn_01_pcb_temp. See sections-example.yaml for the full list.
 #
 # object_id only applies when an entity is FIRST created, so a tower discovered
 # before that change keeps its old ids until its HA device is deleted and
-# re-discovered — see docs/DEPLOYMENT.md.
+# re-discovered, or renamed with bin/ha-align-entity-ids.py.
 #
 # Paste into a dashboard via: Settings → Dashboards → (⋮) → Edit → Raw config.
 

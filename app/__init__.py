@@ -20,8 +20,7 @@ def create_app(config_name=None):
     # `app.lib.hardware`, which imported this file: so every cron watering run
     # was quietly building a second DistanceSensor alongside the MQTT service's
     # own. Two processes triggering one ultrasonic sensor cross-talk and both
-    # read wrong, which is the failure docs/DEPLOYMENT.md warns about under
-    # "Two traps".
+    # read wrong.
     #
     # Deferring them means `app.lib.*` -- config helpers, water maths, state
     # persistence -- can be imported by a CLI without touching hardware at all.

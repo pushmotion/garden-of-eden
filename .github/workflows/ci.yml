@@ -2,10 +2,7 @@ name: CI
 
 on:
   push:
-    # feat/gardyn-tower-local is the build branch the Pi deploys from, so a push
-    # to it reaches live hardware at the next bin/autoupdate.sh tick. Gate it
-    # directly rather than relying on every change going through a PR.
-    branches: [main, feat/gardyn-tower-local]
+    branches: [main]
   pull_request:
 
 jobs:
