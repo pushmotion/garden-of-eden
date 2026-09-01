@@ -157,6 +157,17 @@ too late. Both are *airgaps*, so both are meaningless without `WATER_FULL_CM` /
 `WATER_EMPTY_CM` — a threshold copied between towers means a different
 percentage on each.
 
+**Set the cutoff from the pump, not from a percentage.** Intake designs differ
+between units — some draw from the bottom, some from the side — so choose a
+water depth that clears yours, plus margin for the tower standing tilted, which
+is the case that leaves the intake above water while a level reading still looks
+fine. On a Gardyn Home, 4" of water with ~1.5" of tilt margin works out as
+`PUMP_CUTOFF_CM = WATER_EMPTY_CM - 10.16`. Check what that leaves you: these
+reservoirs are shallow, and a 4" floor can put more than half the tank out of
+reach. If you raise the cutoff, raise the alert with it — `pump_cutoff()`
+rejects an inverted pair and falls back to the alert, leaving no interlock
+beyond the warning.
+
 **The guard fails open on purpose.** A failed read, a stale verdict, a corrupt
 state file — all let the run proceed, because withholding water indefinitely is
 a worse failure than the dry run being guarded against.
