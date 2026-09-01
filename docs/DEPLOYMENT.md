@@ -130,9 +130,9 @@ calibration constant. Read through the service instead:
 
 ```bash
 mosquitto_pub -h "$MQTT_BROKER" -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" \
-  -t gardyn/water/level/get -m 1
+  -t gardyn_01/water/level/get -m 1
 mosquitto_sub -h "$MQTT_BROKER" -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" \
-  -t 'gardyn/water/#' -v
+  -t 'gardyn_01/water/#' -v
 ```
 
 **Mind the sensor's minimum range** (~2 cm for HC-SR04-class parts). At the fill
@@ -197,7 +197,7 @@ trustworthy source when the dashboard and HA disagree.
 All of these are passive and safe:
 
 ```bash
-mosquitto_pub ... -t gardyn/refresh/all -m PRESS   # force-poll everything
+mosquitto_pub ... -t gardyn_01/refresh/all -m PRESS   # force-poll everything
 sudo i2cdetect -y 1                                # expect 0x40, 0x48, 0x5c
 journalctl -u mqtt.service --no-pager -n 50
 ```
@@ -408,7 +408,7 @@ automation trigger.
 - [ ] **The Pi still permits password SSH.** Key auth is set up; consider
       `PasswordAuthentication no` in `/etc/ssh/sshd_config`.
 - [ ] **AI plant-health monitoring** — planned, not built. The service already
-      publishes camera JPEGs to `gardyn/image/{upper,lower}_camera`, so an HA
+      publishes camera JPEGs to `gardyn_01/image/{upper,lower}_camera`, so an HA
       automation could pass a frame plus sensor readings to a vision model. Gate
       it on a time condition rather than every image publish, and decide where
       assessments are stored if growth trends are to be tracked over time.

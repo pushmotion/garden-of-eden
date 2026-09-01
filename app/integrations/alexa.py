@@ -9,7 +9,7 @@ Two viable approaches, neither requiring changes to the core control code:
 
 2. **Direct smart-home skill.** A custom Alexa Smart Home skill backed by an AWS
    Lambda that publishes to the same MQTT command topics (e.g.
-   ``gardyn/light/command``). The Lambda handler would live outside this repo.
+   ``<MQTT_IDENTIFIER>/light/command``). The Lambda handler would live outside this repo.
 
 ``ALEXA_ENABLED`` is provided so future in-process glue (e.g. a local skill
 endpoint) can be toggled. Currently a documented no-op.

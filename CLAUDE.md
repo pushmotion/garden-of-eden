@@ -92,7 +92,7 @@ All pins, I2C addresses, thresholds, file paths, and feature flags live in `conf
 
 ### mqtt.py specifics
 - Uses the shared `get_pin_factory()` and `configure_logging()`.
-- Physical **button** (`gpiozero.Button`, `BUTTON_PIN`): single press → toggle light, double → toggle pump, long press (`when_held`) → event only. All presses publish to `gardyn/button/event` as JSON `{"event_type": ...}` and are exposed as an HA `event` entity (#78).
+- Physical **button** (`gpiozero.Button`, `BUTTON_PIN`): single press → toggle light, double → toggle pump, long press (`when_held`) → event only. All presses publish to `<MQTT_IDENTIFIER>/button/event` as JSON `{"event_type": ...}` and are exposed as an HA `event` entity (#78).
 - Publishes **Home Assistant MQTT discovery** (`send_discovery_messages`), reporting `detect_model()` as the device model. Topic base `BASE_TOPIC`.
 - Publishes telemetry on a timer plus grow-cycle stage/reminders; water-low logic uses `app.lib.water.is_water_low`.
 - **Power-loss recovery**: restores actuator state on connect (`restore_actuator_state`), persists state on every toggle (`app.lib.state`), and turns the pump off on SIGTERM/SIGINT (`graceful_shutdown`).

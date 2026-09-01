@@ -14,5 +14,5 @@ without any custom code:
 
 **Alternative: direct smart-home skill.** Build a custom Alexa Smart Home skill
 backed by an AWS Lambda that publishes to the MQTT command topics
-(`gardyn/light/command`, `gardyn/pump/command`). The Lambda lives outside this
+(`<MQTT_IDENTIFIER>/light/command`, `<MQTT_IDENTIFIER>/pump/command`). The Lambda lives outside this
 repo; `ALEXA_ENABLED` is reserved for any future in-process glue.

@@ -43,7 +43,13 @@ nano .env
 
 Set at least:
 - `MQTT_USERNAME` / `MQTT_PASSWORD` (your mosquitto creds)
-- `MQTT_IDENTIFIER` (unique per unit, e.g. `gardyn_03`)
+- `MQTT_IDENTIFIER` — **unique per unit**, e.g. `gardyn_01`. It namespaces the
+  MQTT topics, the Home Assistant device, and every entity id
+  (`sensor.gardyn_01_water_depth`), so it is the only line a second tower needs
+  to change. Use lowercase letters, digits and underscores only: HA slugifies
+  entity ids, so a hyphen would make the entity prefix (`gardyn_xx`) disagree
+  with the topic namespace (`gardyn-xx`). Leave `MQTT_BASETOPIC` unset — it
+  defaults to this.
 - `WATER_LOW_CM` (low-water threshold; `0` disables)
 - Optionally `GARDEN_API_KEY` to require a key for remote API access.
 

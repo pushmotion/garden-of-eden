@@ -255,31 +255,34 @@ Go to your homeassistant instance:
 If your broker is on the gardyn pi, make sure to install the service mqtt, go to settings->devices&services->mqtt and add your gardyn pi host, port, username and password.
 The device should then appear in your homeassistant discovery settings.
 
-To test locally on gardyn pi:
+To test locally on gardyn pi. The topic prefix below is `MQTT_BASETOPIC`, which
+defaults to `MQTT_IDENTIFIER` (`gardyn_01`) — substitute your own if you changed
+it, and note that a second tower gets its own prefix so the two cannot receive
+each other's commands:
 
 Light:
 
 ```
-mosquitto_pub -t "gardyn/light/command" -m "ON" -u gardyn -P "somepassword"
-mosquitto_pub -t "gardyn/light/command" -m "OFF" -u gardyn -P "somepassword"
+mosquitto_pub -t "gardyn_01/light/command" -m "ON" -u gardyn -P "somepassword"
+mosquitto_pub -t "gardyn_01/light/command" -m "OFF" -u gardyn -P "somepassword"
 ```
 
 Pump:
 
 ```
-mosquitto_pub -t "gardyn/pump/command" -m "ON" -u gardyn -P "somepassword"
-mosquitto_pub -t "gardyn/pump/command" -m "OFF" -u gardyn -P "somepassword"
+mosquitto_pub -t "gardyn_01/pump/command" -m "ON" -u gardyn -P "somepassword"
+mosquitto_pub -t "gardyn_01/pump/command" -m "OFF" -u gardyn -P "somepassword"
 ```
 
 Sensors:
 
 Open two terminals on the gardyn pi, in one run:
 
-`mosquitto_sub -t "gardyn/water/level" -u gardyn -P "somepassword"`
+`mosquitto_sub -t "gardyn_01/water/level" -u gardyn -P "somepassword"`
 
 In the second gardyn pi terminal, run:
 
-`mosquitto_pub -t "gardyn/water/level/get" -m ""-r  -u gardyn -P "somepassword"`
+`mosquitto_pub -t "gardyn_01/water/level/get" -m ""-r  -u gardyn -P "somepassword"`
 
 ```
 

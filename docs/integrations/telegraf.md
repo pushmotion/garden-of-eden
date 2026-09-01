@@ -17,7 +17,7 @@ A ready-to-edit config ships at
    sudo cp services/telegraf/telegraf.conf /etc/telegraf/telegraf.d/gardyn.conf
    ```
 3. Choose a collection method (both are in the file):
-   - **MQTT consumer** (default): subscribes to the `gardyn/*` topics that
+   - **MQTT consumer** (default): subscribes to the `<MQTT_IDENTIFIER>/*` topics that
      `mqtt.py` already publishes. Nothing else to run.
    - **exec**: runs the driver CLIs directly; each prints InfluxDB line protocol
      (`temperature, value=22.5`). Useful without the MQTT service.
