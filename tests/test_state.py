@@ -44,10 +44,6 @@ class ActuatorStateTestCase(unittest.TestCase):
         self.assertTrue(s["light_on"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StateRoundTripTestCase(unittest.TestCase):
     """Keys outside DEFAULT_STATE must survive a save/load round trip.
 
@@ -79,3 +75,7 @@ class StateRoundTripTestCase(unittest.TestCase):
         with open(config.STATE_FILE, "w") as fh:
             fh.write("[1, 2, 3]")
         self.assertEqual(state.load_state(), dict(state.DEFAULT_STATE))
+
+
+if __name__ == "__main__":
+    unittest.main()
