@@ -1,3 +1,19 @@
+# REFERENCE COPY -- editing this file changes nothing on a running tower.
+#
+# bin/setup.sh renders the real unit from a template inside the script, filling
+# in this host's $USER and install directory, and installs that to
+# /etc/systemd/system/mqtt.service. The User= and paths below are the original
+# author's and will not match your Pi.
+#
+# To change the running unit: edit the heredoc in setup.sh's setup_mqtt_service
+# and re-run it, or edit /etc/systemd/system/mqtt.service directly followed by
+# `sudo systemctl daemon-reload`.
+#
+# setup.sh used to overwrite this file in place. Because it is tracked in git,
+# that left every deployed Pi with a dirty working tree and would eventually
+# have made bin/autoupdate.sh's `git pull --ff-only` refuse -- silently ending
+# automatic updates.
+
 [Unit]
 Description=MQTT Service
 Requires=pigpiod.service

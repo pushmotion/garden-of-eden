@@ -111,9 +111,25 @@ views:
             show_header_toggle: false
             entities:
               - entity: number.gardyn_01_water_low_cm
-                name: Trip below (cm)
+                name: Warn below (cm)
+              - entity: sensor.gardyn_01_pump_cutoff_cm
+                name: Stop pump below (cm)
               - entity: sensor.gardyn_01_water_low_mode
                 name: Detection mode
+
+          - type: markdown
+            content: >
+              Two thresholds, both **airgaps** — the distance down to the water,
+              so a larger number means less water. **Warn below** raises the
+              alert; **Stop pump below** is where watering actually stops. The
+              gap between them is deliberate: a warning you can act on should
+              not also refuse to water a tank that still has plenty.
+
+
+              The cutoff is read-only here. It is a safety limit rather than a
+              per-run setting, so it lives in `.env` alongside the tank geometry
+              that gives both numbers their meaning — a threshold copied from
+              another tower means a different percentage on this one.
 
           # ---- Grow cycle ------------------------------------------------
           - type: heading
