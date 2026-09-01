@@ -19,6 +19,48 @@ def is_water_low(distance_cm, threshold_cm):
     return distance_cm > threshold_cm
 
 
+def pump_cutoff(cutoff_cm, alert_cm):
+    """The airgap at which the pump is refused, as opposed to merely alerted on.
+
+    ``cutoff_cm`` unset falls back to ``alert_cm``, which is the behaviour from
+    before the two were split -- one threshold doing both jobs.
+
+    A cutoff must be a *larger* airgap than the alert, because a larger airgap
+    means less water: the tank has to warn before it stops the pump. A cutoff
+    that trips first would refuse to water a tank the user was never told was
+    low, so an inverted pair is rejected in favour of the alert value, which
+    fails toward the earlier, safer of the two.
+    """
+    if not cutoff_cm:
+        return alert_cm or None
+    if alert_cm and cutoff_cm < alert_cm:
+        return alert_cm
+    return cutoff_cm
+
+
+def is_reading_fresh(checked_at_iso, now, max_age_seconds):
+    """True when a persisted water reading is recent enough to act on.
+
+    The CLI cannot read the sensor itself -- a second process triggering the
+    ultrasonic sensor cross-talks with the service's own polling -- so it acts on
+    the verdict the service last wrote. That is only safe while the reading is
+    recent; an old one says nothing about the tank now.
+
+    Unparseable or missing timestamps are *not* fresh, so a corrupt state file
+    fails open (the pump still runs) rather than bricking watering.
+    """
+    if not checked_at_iso:
+        return False
+    try:
+        from datetime import datetime
+
+        checked = datetime.fromisoformat(str(checked_at_iso))
+    except (TypeError, ValueError):
+        return False
+    age = (now - checked).total_seconds()
+    return 0 <= age <= max_age_seconds
+
+
 def gallons_remaining(distance_cm, full_cm, empty_cm, capacity_gal):
     """Estimate gallons left from the sensor distance via a linear full->empty map.
 

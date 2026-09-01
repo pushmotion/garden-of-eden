@@ -18,7 +18,7 @@ from app.lib import grow as grow_lib
 from app.lib import state as state_lib
 from app.lib.hardware import current_duty_fraction, detect_model, get_pin_factory
 from app.lib.logging_config import configure_logging
-from app.lib.water import gallons_remaining, is_water_low
+from app.lib.water import gallons_remaining, is_water_low, pump_cutoff
 from app.sensors.camera import camera as camera_mod
 from app.sensors.distance.distance import MeasurementError
 from app.sensors.distance.routes import distance_control
@@ -45,6 +45,7 @@ from config import (
     MODEL,
     PASSWORD,
     PORT,
+    PUMP_CUTOFF_CM,
     TANK_CAPACITY_GALLONS,
     UPPER_CAMERA_DEVICE,
     UPPER_IMAGE_PATH,
@@ -353,13 +354,44 @@ def evaluate_water_low(client):
     low = _water_low_streak >= 2
     client.publish(BASE_TOPIC + "/water/low/state", "ON" if low else "OFF", retain=True)
     logger.info(
-        "Water level %.2fcm (threshold %.2fcm) -> low=%s (streak %d)",
+        "Water level %.2fcm (alert %.2fcm, pump cutoff %.2fcm) -> low=%s (streak %d)",
         distance,
         WATER_LOW_CM,
+        effective_pump_cutoff() or 0,
         low,
         _water_low_streak,
     )
+    record_water_reading(distance)
     return distance
+
+
+def effective_pump_cutoff():
+    """The airgap at which the pump is refused (falls back to the alert)."""
+    return pump_cutoff(PUMP_CUTOFF_CM, WATER_LOW_CM)
+
+
+def record_water_reading(distance):
+    """Persist the latest reading and the pump verdict for other processes.
+
+    cron drives watering through ``bin/water.sh``, which cannot take its own
+    reading: a second process triggering the ultrasonic sensor cross-talks with
+    this service's polling and both come back wrong. So the verdict is published
+    to the state file instead, and the CLI acts on this median-filtered value
+    rather than racing for its own.
+
+    The timestamp is what makes that safe -- the CLI ignores a reading that has
+    gone stale, so a stopped service fails open rather than blocking watering
+    forever.
+    """
+    cutoff = effective_pump_cutoff()
+    try:
+        state_lib.save_state(
+            water_airgap_cm=round(float(distance), 2),
+            water_checked_at=datetime.now().isoformat(timespec="seconds"),
+            pump_blocked=bool(is_water_low(distance, cutoff)),
+        )
+    except Exception:
+        logger.exception("Could not persist the water reading")
 
 
 def publish_light_state(client):
@@ -432,15 +464,28 @@ def water_ok_for_pump(client):
     Shared by the power button and the speed slider so both paths enforce the
     same dry-run protection. Fails *open* when the distance read itself fails,
     matching ``is_water_low``, so a dead sensor cannot brick the pump.
+
+    Compares against the **cutoff**, not the alert. Between the two thresholds
+    the tank is low enough to be worth warning about and still has plenty to
+    pump, so the alert firing must not stop watering.
+
+    Deliberately no longer publishes ``water/low/state``. It used to push "OFF"
+    whenever the pump was allowed, which after the split would clear a perfectly
+    valid alert every time somebody ran the pump. ``evaluate_water_low`` owns
+    that topic, along with the debounce that keeps it from flapping.
     """
-    distance = safe_distance_measure()
-    if not is_water_low(distance, WATER_LOW_CM):
-        client.publish(BASE_TOPIC + "/water/low/state", "OFF", retain=True)
+    cutoff = effective_pump_cutoff()
+    # A median rather than a single read: one missed echo reports a large
+    # distance, and that spike would refuse a pump run on a full tank.
+    distance = measure_distance_median()
+    if distance is not None:
+        record_water_reading(distance)
+
+    if not is_water_low(distance, cutoff):
         return True
 
-    logger.warning("Water too low (%.2fcm > %.2fcm), aborting pump", distance, WATER_LOW_CM)
+    logger.warning("Water below the pump cutoff (%.2fcm > %.2fcm), aborting pump", distance, cutoff)
     flash_lights()
-    client.publish(BASE_TOPIC + "/water/low/state", "ON", retain=True)
     return False
 
 

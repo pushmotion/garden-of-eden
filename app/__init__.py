@@ -5,23 +5,39 @@ from flask_cors import CORS
 
 import config
 
-from .sensors.camera.routes import camera_blueprint
-from .sensors.distance.routes import distance_blueprint
-from .sensors.grow.routes import grow_blueprint
-from .sensors.humidity.routes import humidity_blueprint
-from .sensors.light.routes import light_blueprint
-from .sensors.pcb_temp.routes import pcb_temp_blueprint
-from .sensors.pods.routes import pods_blueprint
-from .sensors.pump.routes import pump_blueprint
-from .sensors.schedule.routes import schedule_blueprint
-from .sensors.system.routes import system_blueprint
-from .sensors.temperature.routes import temperature_blueprint
-from .web.routes import web_blueprint
-
 logger = logging.getLogger(__name__)
+
+# Blueprint imports live inside create_app() on purpose -- see the note there.
 
 
 def create_app(config_name=None):
+    # Imported here, not at module scope. Every routes module instantiates its
+    # driver at import (`pump_control = PumpControl(...)`), so importing them
+    # from this file meant that *any* `import app.<anything>` constructed the
+    # full set of GPIO drivers -- Light, Pump, Distance, the lot.
+    #
+    # That is not theoretical. `bin/water.sh` runs `pump.py`, which imports
+    # `app.lib.hardware`, which imported this file: so every cron watering run
+    # was quietly building a second DistanceSensor alongside the MQTT service's
+    # own. Two processes triggering one ultrasonic sensor cross-talk and both
+    # read wrong, which is the failure docs/DEPLOYMENT.md warns about under
+    # "Two traps".
+    #
+    # Deferring them means `app.lib.*` -- config helpers, water maths, state
+    # persistence -- can be imported by a CLI without touching hardware at all.
+    from .sensors.camera.routes import camera_blueprint
+    from .sensors.distance.routes import distance_blueprint
+    from .sensors.grow.routes import grow_blueprint
+    from .sensors.humidity.routes import humidity_blueprint
+    from .sensors.light.routes import light_blueprint
+    from .sensors.pcb_temp.routes import pcb_temp_blueprint
+    from .sensors.pods.routes import pods_blueprint
+    from .sensors.pump.routes import pump_blueprint
+    from .sensors.schedule.routes import schedule_blueprint
+    from .sensors.system.routes import system_blueprint
+    from .sensors.temperature.routes import temperature_blueprint
+    from .web.routes import web_blueprint
+
     app = Flask(__name__)
 
     # CORS lives here (not run.py) so the test client and any WSGI host get

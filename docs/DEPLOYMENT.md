@@ -102,10 +102,31 @@ Calibrated values for this unit:
 |---|---|---|
 | `WATER_EMPTY_CM` | 23.05 | sensor face to tank floor |
 | `WATER_FULL_CM` | 4.81 | airgap at the fill line |
-| `WATER_LOW_CM` | 20.0 | dry-run cutoff ≈ 3 cm depth ≈ 17% remaining |
+| `WATER_LOW_CM` | 13.0 | **alert** ≈ 10.0 cm depth ≈ 55% remaining |
+| `PUMP_CUTOFF_CM` | 17.6 | **interlock** ≈ 5.5 cm depth ≈ 30% remaining |
 | `TANK_CAPACITY_GALLONS` | 5 | **unverified** — upstream default, see Open items |
 
 Usable depth is therefore ~18.2 cm (7.2").
+
+### Why two thresholds
+
+They answer different questions, and one number could not serve both. The alert
+wants to be early enough to be a useful "top me up"; the interlock wants to be
+late enough that it does not withhold water from a tank that still has plenty.
+While `WATER_LOW_CM` was doing both jobs at 20.0 (17% remaining) the alert was
+almost useless — by the time it fired there was very little left.
+
+Between 55% and 30% the tower now warns and keeps watering. Below 30% it stops.
+
+`PUMP_CUTOFF_CM` unset falls back to `WATER_LOW_CM`, which is exactly the old
+single-threshold behaviour, so this is safe to leave unconfigured.
+
+**Both are airgaps, so both are meaningless without the geometry above.**
+Upstream's shipped `WATER_LOW_CM=11` is 60% on *its* nominal 5/20 tank — but 66%
+on this one, which is why copying a threshold between towers does not work.
+Under the old single-threshold scheme that was merely a noisy alert; now that
+the value also gates the pump, an imported number would refuse to water a
+two-thirds-full tank.
 
 ### How to recalibrate
 
