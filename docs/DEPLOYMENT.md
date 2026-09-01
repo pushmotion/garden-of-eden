@@ -151,9 +151,17 @@ python3 -m venv ~/gedev && ~/gedev/bin/pip install -r requirements-dev.txt
 ~/gedev/bin/ruff check . && ~/gedev/bin/black --check .
 ```
 
-CI gates on all three. Expect **177 tests** on this branch and **126** on a
-branch cut from upstream `main` — the difference is this fork's own coverage, so
-a lower count is a hint that something did not merge, not that tests vanished.
+CI gates on all three. Expect **at least 185 tests** on this branch and **126**
+on a branch cut from upstream `main` — the difference is this fork's own
+coverage, so a materially lower count is a hint that something did not merge,
+not that tests vanished.
+
+Deliberately a floor, not an exact figure. The number moves with almost every
+PR, it was written down in four places, and correcting it by hand is how
+DEPLOYMENT.md ended up claiming 177 while the README said 185. If you do want
+the live count, take it from the runner rather than from `grep -c 'def test_'`
+— that undercounts, because `tests/test_api.py` loads 17 tests from 16
+definitions.
 
 Do not put the venv in `/tmp`: WSL clears it between sessions.
 

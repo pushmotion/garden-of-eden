@@ -203,7 +203,7 @@ the cycle start, so acknowledging one does not immediately re-fire it.
 
 ### 7. Testing and ops
 
-- **185 tests**, up from 126 on upstream `main`, including offline HA discovery validation,
+- **185+ tests**, up from 126 on upstream `main`, including offline HA discovery validation,
   MQTT control-path tests, and schedule regression tests.
 - `docs/DEPLOYMENT.md` documents the branch model, water calibration and how to
   redo it, the two ways to take a wrong sensor reading, and the open items.
@@ -515,7 +515,7 @@ Start the Flask REST API `python run.py`
 Test options:
 
 ```bash
-# unit tests (185) — the CI gate. Run this OFF the Pi.
+# unit tests — the CI gate. Run this OFF the Pi.
 python -m unittest discover -t . -s tests -p 'test_*.py'
 
 # lint + format, also gated in CI
@@ -787,7 +787,7 @@ Using `gpiozero` to leverage `pigpio` daemon which is hardware driven and more e
 ├── simulator               full stack with stateful fake hardware, off-Pi
 ├── services                systemd unit, mosquitto + telegraf configs, udev rules
 ├── docs                    DEPLOYMENT.md, INSTALL.md, design, access, homeassistant/
-└── tests                   185 tests; _hwstub.py fakes GPIO when libs are absent
+└── tests                   185+ tests; _hwstub.py fakes GPIO when libs are absent
 ```
 
 Every sensor follows the same shape — `<name>.py` (a driver class with an
