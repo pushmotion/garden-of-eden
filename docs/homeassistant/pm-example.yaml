@@ -1,8 +1,12 @@
 # PushMotion example dashboard -- Home Assistant "Sections" layout.
 #
-# One of two examples in this folder; pick whichever you prefer:
-#   lovelace-example.yaml  -- plain single-column card list (upstream style)
-#   pm-example.yaml        -- this file: grouped sections, status-first
+# One of two examples in this folder:
+#   pm-example.yaml        -- this file: grouped sections, status-first, and the
+#                             only one covering all 37 discovered entities
+#   lovelace-example.yaml  -- plain single-column card list (upstream style),
+#                             a 25-entity SUBSET; see its header for what it omits
+#
+# Prefer this file unless you specifically want the shorter starting point.
 #
 # Paste into: Settings -> Dashboards -> (your dashboard) -> Edit -> (three dots)
 # -> "Raw configuration editor". This replaces the whole dashboard config.

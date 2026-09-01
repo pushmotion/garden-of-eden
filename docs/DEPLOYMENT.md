@@ -214,8 +214,16 @@ unless the pump is submerged.
 **[`docs/homeassistant/pm-example.yaml`](homeassistant/pm-example.yaml) is the
 dashboard these towers use.** It is a Sections layout (HA 2024.3+) grouped by
 function — status first, then lighting, pump, one-time runs, environment,
-cameras, diagnostics. `lovelace-example.yaml` alongside it is the older plain
-card list, kept as a simpler starting point.
+cameras, diagnostics, and it is the only example covering all 37 discovered
+entities. `lovelace-example.yaml` alongside it is the older plain card list and
+a **subset** — 25 entities, with one-time pump runs, the derived water readings
+(depth/gallons), the refresh controls and the diagnostic log all absent. Keep it
+as a minimal starting point, not as an equivalent layout.
+
+`automations/lights.yml` and `automations/pump.yml` are an **alternative** to
+the built-in scheduler, not an addition to it. Cron already drives the light and
+pump from the saved schedule; importing these puts HA on the same actuators with
+no coordination between them. Use one or the other, never both.
 
 Apply it via Settings → Dashboards → ⋮ → Edit → **Raw configuration editor**.
 That editor *replaces* the whole dashboard, so if the target dashboard already
