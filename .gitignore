@@ -16,3 +16,9 @@ simulator/.sim/
 .playwright-mcp/
 garden-*.png
 timelapse/
+
+# Local secrets that must never reach git or the Pi (the Pi deploys via git,
+# so anything ignored here can never be pushed to it). Home Assistant
+# long-lived access token lives in .ha_token.
+.ha_token
+*.token
