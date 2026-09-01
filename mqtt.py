@@ -18,7 +18,7 @@ from app.lib import grow as grow_lib
 from app.lib import state as state_lib
 from app.lib.hardware import current_duty_fraction, detect_model, get_pin_factory
 from app.lib.logging_config import configure_logging
-from app.lib.water import gallons_remaining, is_water_low, pump_cutoff
+from app.lib.water import is_water_low, pump_cutoff, tank_readings
 from app.sensors.camera import camera as camera_mod
 from app.sensors.distance.distance import MeasurementError
 from app.sensors.distance.routes import distance_control
@@ -435,27 +435,27 @@ def commit_pump_state(client):
     state_lib.save_state(pump_on=pump_state, speed=speed)
 
 
+# The HA duration control is in whole minutes while the cap is in seconds, so
+# it rounds *down*: offering a 5-minute option under a 290-second cap would let
+# the dashboard request a run the pump routes then refuse.
+MAX_PUMP_MINUTES = max(1, MAX_PUMP_RUN_SECONDS // 60)
+
+
 def publish_water_readings(client, distance):
     """Publish the raw airgap plus the derived depth, fill percentage and gallons.
 
     The sensor reports the gap down to the water surface, so that number grows as
     the tank drains; depth is its complement measured up from the tank floor.
     """
+    readings = tank_readings(distance, WATER_FULL_CM, WATER_EMPTY_CM, TANK_CAPACITY_GALLONS)
+
     client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}")
-
-    span = WATER_EMPTY_CM - WATER_FULL_CM
-    if span <= 0:
-        return
-
-    depth = max(0.0, WATER_EMPTY_CM - distance)
-    client.publish(BASE_TOPIC + "/water/depth", f"{depth:.2f}")
-
-    percent = max(0.0, min(100.0, depth / span * 100.0))
-    client.publish(BASE_TOPIC + "/water/percent", f"{percent:.0f}")
-
-    gallons = gallons_remaining(distance, WATER_FULL_CM, WATER_EMPTY_CM, TANK_CAPACITY_GALLONS)
-    if gallons is not None:
-        client.publish(BASE_TOPIC + "/water/gallons", f"{gallons:.1f}")
+    if readings["depth_cm"] is not None:
+        client.publish(BASE_TOPIC + "/water/depth", f"{readings['depth_cm']:.2f}")
+    if readings["percent"] is not None:
+        client.publish(BASE_TOPIC + "/water/percent", f"{readings['percent']:.0f}")
+    if readings["gallons"] is not None:
+        client.publish(BASE_TOPIC + "/water/gallons", f"{readings['gallons']:.1f}")
 
 
 def water_ok_for_pump(client):
@@ -1091,7 +1091,12 @@ def send_discovery_messages(client):
             "Pump Run Duration",
             "schedule/pump/duration",
             "mdi:timer-sand",
-            {"min": 1, "max": 5, "step": 1, "unit_of_measurement": "min"},
+            {
+                "min": 1,
+                "max": MAX_PUMP_MINUTES,
+                "step": 1,
+                "unit_of_measurement": "min",
+            },
         ),
     ]
     for component, obj, name, topic, icon, extra in everyday:
@@ -1527,7 +1532,7 @@ def on_message(client, userdata, msg):
             _set_pump_first_time(client, _time_from_ha(payload))
 
         elif topic_suffix == "schedule/pump/duration/set" and payload.isdigit():
-            _set_pump_duration(client, max(1, min(5, int(payload))))
+            _set_pump_duration(client, max(1, min(MAX_PUMP_MINUTES, int(payload))))
 
         elif topic_suffix == "schedule/pump/manual/time/set":
             manual_pump_time = _time_from_ha(payload)

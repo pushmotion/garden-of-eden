@@ -135,9 +135,13 @@ class DistanceBlueprintTestCase(BaseTestCase):
         # Asserting that the status code is 200 OK
         self.assertEqual(response.status_code, 200)
 
-        # Asserting that the response JSON contains the mocked distance value
-        # plus the derived gallons estimate (55.5cm is past empty -> 0 gallons).
-        self.assertEqual(response.get_json(), {"distance": 55.5, "gallons": 0.0})
+        # The raw airgap plus every figure derived from it, so the web UI can
+        # render the tank without holding its own copy of the calibration.
+        # 55.5cm is well past empty, so everything derived bottoms out.
+        self.assertEqual(
+            response.get_json(),
+            {"distance": 55.5, "depth": 0.0, "percent": 0.0, "gallons": 0.0},
+        )
 
 
 class PCBTempBlueprintTestCase(BaseTestCase):

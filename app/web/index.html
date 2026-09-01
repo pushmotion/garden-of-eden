@@ -342,7 +342,7 @@
       </div>
       <div class="row">
         <label>Run for</label>
-        <input type="number" id="run-secs" min="1" max="300" value="300" style="width:90px"> <span class="muted">seconds (max 300)</span>
+        <input type="number" id="run-secs" min="1" value="300" style="width:90px"> <span class="muted">seconds (max <span id="run-secs-max">300</span>)</span>
         <button class="btn" onclick="runPump()">Run</button>
       </div>
     </div>
@@ -426,8 +426,8 @@
         </div>
         <div class="row" style="margin-top:9px">
           <label>at <input type="time" id="once-time" value="12:00"></label>
-          <label>for <input type="number" id="once-dur" min="1" max="5" value="3" style="width:58px"
-                 onchange="clampPumpMin(this)"> <span class="muted">min (max 5)</span></label>
+          <label>for <input type="number" id="once-dur" min="1" value="3" style="width:58px"
+                 onchange="clampPumpMin(this)"> <span class="muted">min (max <span id="once-dur-max">5</span>)</span></label>
           <button class="btn" onclick="armOnce()">Arm run</button>
         </div>
         <div class="runs" id="once-pending"></div>
@@ -467,6 +467,11 @@
     let camInterval = +localStorage.getItem("camInterval") || 6000;
     let units = localStorage.getItem("units") || "c";  // "c" or "f", remembered per browser
     let waterLowCm = null;  // tank-low threshold (cm) from /system; null = disabled
+    // Pump caps come from /system so this page cannot promise a run the API will
+    // refuse. The fallbacks match config.py's own default and only apply while
+    // /system has not answered yet.
+    let pumpMaxSeconds = 300;
+    let pumpMaxMinutes = 5;
     const SCH_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
     const emptyDays = () => Object.fromEntries(SCH_DAYS.map(d => [d, []]));
     let lightDays = emptyDays(), pumpDays = emptyDays();
@@ -546,7 +551,11 @@
     }
     async function setLight(on) { await post(on ? "/light/on" : "/light/off"); setActive("light", on); }
     async function setPump(on) { await post(on ? "/pump/on" : "/pump/off"); setActive("pump", on); }
-    async function runPump() { const s = +$("run-secs").value; await post("/pump/run", { seconds: s }); setActive("pump", true); }
+    // Clamped rather than merely bounded by the input's max: a max attribute is
+    // advisory in most browsers, and the API rejects an over-cap request outright.
+    function clampPumpSecs(input) { let v = Math.round(+input.value || 0); v = Math.min(pumpMaxSeconds, Math.max(1, v)); input.value = v; return v; }
+
+    async function runPump() { const s = clampPumpSecs($("run-secs")); await post("/pump/run", { seconds: s }); setActive("pump", true); }
 
     // INA219 readings arrive at full float precision (0.24390243902439024 mA),
     // which overflows the tile it is rendered into. Two decimals is already well
@@ -567,9 +576,11 @@
         const w = await get("/distance"); const cm = w.distance;
         $("s-water").textContent = cm;
         $("s-water-gal").textContent = (w.gallons != null) ? w.gallons : "—";
-        // Map ~5cm (full) .. ~20cm (empty) to a 0..100% bar.
-        const pct = Math.max(0, Math.min(100, (1 - (cm - 5) / 15) * 100));
-        $("s-water-bar").style.width = pct + "%";
+        // The API derives the fill percentage from the tower's own calibration,
+        // the same call Home Assistant's Water Remaining comes from. Deriving it
+        // here instead would mean holding a second copy of the tank geometry,
+        // which is exactly how this bar came to disagree with HA.
+        $("s-water-bar").style.width = (w.percent != null ? Math.max(0, Math.min(100, w.percent)) : 0) + "%";
         // Tank-low warning: larger distance = lower water (threshold from /system).
         const badge = $("s-water-status");
         if (waterLowCm != null && cm > waterLowCm) {
@@ -601,7 +612,21 @@
         $("d-id").textContent = s.identifier || "—";
         waterLowCm = (s.water_low_cm != null && s.water_low_cm !== 0) ? s.water_low_cm : null;
         $("d-waterlow").textContent = waterLowCm != null ? `> ${waterLowCm} cm` : "off";
-        $("d-pumpcap").textContent = s.pump_max_run_seconds != null ? `${Math.round(s.pump_max_run_seconds / 60)} min` : "—";
+        if (s.pump_max_run_seconds != null) {
+          pumpMaxSeconds = s.pump_max_run_seconds;
+          // Whole minutes, rounded down: the minute controls must never offer a
+          // duration the seconds-based cap would then reject.
+          pumpMaxMinutes = Math.max(1, Math.floor(pumpMaxSeconds / 60));
+        }
+        $("d-pumpcap").textContent = s.pump_max_run_seconds != null ? `${Math.round(pumpMaxSeconds / 60)} min` : "—";
+        $("run-secs").max = pumpMaxSeconds;
+        $("run-secs-max").textContent = pumpMaxSeconds;
+        $("once-dur").max = pumpMaxMinutes;
+        $("once-dur-max").textContent = pumpMaxMinutes;
+        // The markup defaults assume config.py's own default. If this tower caps
+        // lower, the prefilled values are already over it by the time we get here.
+        clampPumpSecs($("run-secs"));
+        clampPumpMin($("once-dur"));
         conn(true);
       } catch { $("meta").textContent = "offline"; conn(false); }
     }
@@ -704,7 +729,7 @@
     function startGrow() { post("/grow/start").then(loadGrow); }
 
     // Clamp a pump duration input to the 1..5 minute safety range.
-    function clampPumpMin(input) { let v = Math.round(+input.value || 0); v = Math.min(5, Math.max(1, v)); input.value = v; return v; }
+    function clampPumpMin(input) { let v = Math.round(+input.value || 0); v = Math.min(pumpMaxMinutes, Math.max(1, v)); input.value = v; return v; }
 
     // ---- What happens next, and whether cron agrees with the saved schedule ----
     // "in 2h 15m" reads better than a bare timestamp for something imminent, but
@@ -972,7 +997,7 @@
               <button class="ghost" onclick="lightDays['${day}'].splice(${i},1);renderSchedule()">✕</button>`;
           } else {
             div.innerHTML = `<input type="time" value="${e.time}" onchange="pumpDays['${day}'][${i}].time=this.value">
-              <input type="number" min="1" max="5" value="${e.duration}" style="width:58px" onchange="pumpDays['${day}'][${i}].duration=clampPumpMin(this)"><span class="muted">min (max 5)</span>
+              <input type="number" min="1" max="${pumpMaxMinutes}" value="${e.duration}" style="width:58px" onchange="pumpDays['${day}'][${i}].duration=clampPumpMin(this)"><span class="muted">min (max ${pumpMaxMinutes})</span>
               <button class="ghost" onclick="pumpDays['${day}'].splice(${i},1);renderSchedule()">✕</button>`;
           }
           entries.appendChild(div);

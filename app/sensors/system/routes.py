@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify
 
 import config
+from app.lib import water
 from app.lib.hardware import detect_model
 
 system_blueprint = Blueprint("system", __name__)
@@ -30,6 +31,12 @@ def get_system():
             "profile": _profile_for(model),
             "sensor_type": config.SENSOR_TYPE,
             "water_low_cm": config.WATER_LOW_CM,
+            "pump_cutoff_cm": water.pump_cutoff(config.PUMP_CUTOFF_CM, config.WATER_LOW_CM),
+            # Tank geometry, so clients can label a reading without holding
+            # their own copy of the calibration. See app/lib/water.py.
+            "water_full_cm": config.WATER_FULL_CM,
+            "water_empty_cm": config.WATER_EMPTY_CM,
+            "tank_capacity_gallons": config.TANK_CAPACITY_GALLONS,
             "pump_max_run_seconds": config.MAX_PUMP_RUN_SECONDS,
         }
     )

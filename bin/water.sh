@@ -2,8 +2,10 @@
 
 # Script to control Gardyn water pump
 # Usage: water <seconds|on|off>
-# "on" defaults to 300 seconds (5 minutes), valid time range is 1 to 300 seconds
-# (5 minutes) -- a hard safety cap; out-of-range input falls back to the default.
+# "on" runs for the full cap. Valid range is 1 second to MAX_PUMP_RUN_SECONDS
+# from config.py (300 by default) -- a hard safety cap shared with the pump
+# routes, the schedule compiler and Home Assistant. Out-of-range input falls
+# back to the default rather than being clamped, so a typo cannot become a run.
 
 # -e exit immediately
 # -u undefined variables trigger error
@@ -11,9 +13,7 @@
 set -euo pipefail
 
 # Constants
-readonly TIME_DEFAULT=300    # 5 minutes in seconds
 readonly TIME_MIN=1          # 1 second
-readonly TIME_MAX=300        # 5 minutes in seconds (hard safety cap)
 readonly SPEED=50
 readonly WATER_BY_DEFAULT=true  # Whether to default to TIME_DEFAULT on invalid input
 
@@ -30,6 +30,29 @@ GOE_PATH=$(realpath "$(dirname "$(readlink -e "${0}")")/..")
 # Put the repo root on PYTHONPATH so the driver scripts can `import config`
 # regardless of the caller's working directory (cron, systemd, etc.).
 export PYTHONPATH="${GOE_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
+
+# The hard safety cap comes from config.py (MAX_PUMP_RUN_SECONDS), the same value
+# the pump routes, the schedule compiler and Home Assistant enforce. It used to be
+# a literal 300 here, so raising the cap in .env left this path silently refusing
+# anything longer -- cron and the CLI capped at five minutes while every other
+# surface allowed more.
+#
+# Falls back to config.py's own default if python cannot answer: a broken venv
+# must not make watering impossible, and the pump routes enforce the real cap
+# regardless. The fallback is deliberately the *lower*, safer of the plausible
+# values rather than unbounded.
+read_pump_cap() {
+    local cap
+    cap=$("${GOE_PATH}/venv/bin/python" -c         'import config; print(int(config.MAX_PUMP_RUN_SECONDS))' 2>/dev/null) || cap=""
+    if [[ "${cap}" =~ ^[0-9]+$ ]] && (( cap >= 1 )); then
+        echo "${cap}"
+    else
+        echo 300
+    fi
+}
+
+readonly TIME_MAX=$(read_pump_cap)
+readonly TIME_DEFAULT="${TIME_MAX}"
 
 # Turn off water pump
 turn_off_water() {
