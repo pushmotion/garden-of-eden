@@ -2,21 +2,25 @@
 #
 # A plain single-column card list, kept as the simplest possible starting point.
 #
-# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 25 of the 37 entities
+# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 24 of the 40 entities
 # mqtt.py discovers. If you want the whole device, use sections-example.yaml in this
 # folder; it is the dashboard these towers actually run.
 #
-# Not shown here:
+# Not shown here (16 of the 40):
 #   button.<id>_pump_run_once      time.<id>_sched_pump_manual_time
 #   sensor.<id>_pump_once_next     sensor.<id>_pump_next_run
-#   sensor.<id>_pump_max_seconds   button.<id>_refresh_all
-#   sensor.<id>_refresh_status     sensor.<id>_refresh_last
-#   sensor.<id>_water_depth        sensor.<id>_water_gallons
-#   sensor.<id>_water_low_mode     sensor.<id>_log
+#   sensor.<id>_pump_max_seconds   sensor.<id>_pump_cutoff_cm
+#   button.<id>_refresh_all        sensor.<id>_refresh_status
+#   sensor.<id>_refresh_last       sensor.<id>_water_depth
+#   sensor.<id>_water_gallons      sensor.<id>_water_low_mode
+#   button.<id>_ack_nutrient       button.<id>_ack_reservoir_change
+#   event.<id>_button              sensor.<id>_log
 #
-# Those cover one-time pump runs, the derived water readings, the forced-refresh
-# controls and the diagnostic log -- so a tower driven from this dashboard alone
-# cannot water on demand and shows the raw airgap rather than depth or gallons.
+# Those cover one-time pump runs, the watering interlock and its thresholds, the
+# grow-cycle acknowledgements, the forced-refresh controls, the physical button
+# and the diagnostic log -- so a tower driven from this dashboard alone cannot
+# water on demand, and sees water only as a percentage and a raw airgap rather
+# than depth or gallons.
 #
 # All entities are created automatically via MQTT discovery by mqtt.py, which
 # pins each object_id to its unique_id. Entity ids are therefore always
@@ -56,8 +60,10 @@ views:
             name: Humidity
           - entity: sensor.gardyn_01_pcb_temp
             name: PCB Temp
+          - entity: sensor.gardyn_01_water_percent
+            name: Water Remaining
           - entity: sensor.gardyn_01_water_level
-            name: Water Level
+            name: Distance to Water
           - entity: binary_sensor.gardyn_01_water_low
             name: Water Low
 
