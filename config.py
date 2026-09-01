@@ -37,7 +37,11 @@ KEEP_ALIVE_INTERVAL = _get_int("MQTT_KEEPALIVE_INTERVAL", 60)
 
 # Topic / device identity (used for Home Assistant discovery)
 VERSION = os.getenv("MQTT_VERSION", "1.0.0")
-IDENTIFIER = os.getenv("MQTT_IDENTIFIER", "gardyn-xx")
+# Keep this slug-safe (a-z, 0-9, underscore). It becomes both the MQTT topic
+# namespace and the entity-id prefix, and Home Assistant slugifies entity ids --
+# so the old "gardyn-xx" default published to `gardyn-xx/...` while HA showed
+# `sensor.gardyn_xx_...`, quietly disagreeing with itself.
+IDENTIFIER = os.getenv("MQTT_IDENTIFIER", "gardyn_01")
 MODEL = os.getenv("MQTT_DEVICE_MODEL", "gardyn 3.0")
 # Defaults to the identifier so each tower gets its own topic namespace. A
 # shared base topic is not cosmetic: mqtt.py subscribes to BASE_TOPIC + "/#",

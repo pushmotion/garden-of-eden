@@ -53,8 +53,8 @@ Inspect discovery without HA using any MQTT client:
 
 ```bash
 mosquitto_sub -t 'homeassistant/#' -v        # discovery configs
-mosquitto_sub -t 'gardyn/#' -v               # live state/telemetry
-mosquitto_pub -t 'gardyn/light/command' -m ON  # drive the simulated light
+mosquitto_sub -t 'gardyn_sim/#' -v               # live state/telemetry
+mosquitto_pub -t 'gardyn_sim/light/command' -m ON  # drive the simulated light
 ```
 
 ## Automated coverage
