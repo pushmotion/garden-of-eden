@@ -128,9 +128,32 @@ OVER_TEMP_HYSTERESIS = _get_float("OVER_TEMP_HYSTERESIS", 34)
 # ---------------------------------------------------------------------------
 WATER_LOW_CM = _get_float("WATER_LOW_CM", 0) or None
 
+# The airgap (cm) at which the pump is refused outright, as opposed to merely
+# alerted on. Separate from WATER_LOW_CM because the two answer different
+# questions: the alert wants to be early enough to be useful ("top me up"),
+# while the interlock wants to be late enough that it does not withhold water
+# from a tank that still has plenty. One value cannot be both -- set it early
+# and a full-ish tank stops being watered; set it late and the alert is useless.
+#
+# Both are airgaps, so both are meaningless without WATER_FULL_CM/WATER_EMPTY_CM
+# below: a threshold is only a percentage once you know the tank's geometry.
+# Unset falls back to WATER_LOW_CM, which is exactly the previous behaviour --
+# one threshold doing both jobs.
+PUMP_CUTOFF_CM = _get_float("PUMP_CUTOFF_CM", 0) or None
+
 # How often (seconds) the MQTT service re-reads the tank and refreshes the
 # low-water alert. Kept short so a transient false alarm self-clears quickly.
 WATER_CHECK_SECONDS = _get_int("WATER_CHECK_SECONDS", 180)
+
+# How old (seconds) the MQTT service's last water reading may be and still gate
+# the cron/CLI watering path. The CLI cannot read the sensor itself without
+# cross-talking with the service, so it acts on the persisted verdict instead --
+# and only while that verdict still describes the tank.
+#
+# The default tolerates a couple of missed poll cycles. Do not raise it far: a
+# stale "blocked" verdict from a service that has stopped would withhold water
+# indefinitely, so this is also the window after which watering fails *open*.
+WATER_READING_MAX_AGE_SECONDS = _get_int("WATER_READING_MAX_AGE_SECONDS", WATER_CHECK_SECONDS * 3)
 
 # How often (seconds) the MQTT service re-reads the light/pump duty cycles and
 # republishes them. cron, the REST API, the CLI and the physical button all drive
