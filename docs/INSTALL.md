@@ -4,9 +4,18 @@ These notes are written for the person **and the Claude Code session** doing the
 install on the actual Gardyn Pi. Follow them top to bottom. The install is
 designed to be brick-safe (dry-run, backups, uninstall) — see "Safety" below.
 
-> **Important:** the work lives on the **`v2-overhaul`** branch of the fork
-> `HeatherFlux/garden-of-eden`. The fork's default branch (`main`) does NOT have
-> these changes — you must `git checkout v2-overhaul`.
+> **Important:** install from **`feat/gardyn-tower-local`** on
+> `pushmotion/garden-of-eden`. That is the build branch — the only thing a tower
+> should ever run. This fork's `main` is kept as a pure mirror of upstream and
+> deliberately carries none of the fork's work.
+>
+> The reason is not features: the v2 overhaul this guide was first written for
+> has since shipped upstream as 2.0.0. It is that upstream 2.0.0 still contains
+> three pump defects which make the pump unusable from Home Assistant, and one
+> of which lets the speed slider bypass the dry-run guard. See
+> [Branch model](DEPLOYMENT.md#branch-model) and
+> [Why this fork exists](DEPLOYMENT.md#why-this-fork-exists) — that document is
+> the source of truth for both, so this one does not restate them.
 
 ---
 
@@ -29,9 +38,15 @@ ssh gardyn@gardyn.local      # or use the Pi's IP if .local doesn't resolve
 ## 1. Get the code (the right branch)
 
 ```bash
-git clone https://github.com/HeatherFlux/garden-of-eden.git
+git clone https://github.com/pushmotion/garden-of-eden.git
 cd garden-of-eden
-git checkout v2-overhaul
+git checkout feat/gardyn-tower-local
+```
+
+Check it took — every later step assumes it:
+
+```bash
+git branch --show-current      # feat/gardyn-tower-local
 ```
 
 ## 2. Configure
@@ -109,14 +124,20 @@ Dashboard example: `docs/homeassistant/lovelace-example.yaml`.
   backups, removes our cron entries; leaves apt packages + SSH alone).
 - **Won't boot after an I2C change?** Put the SD card in any computer and copy
   `config.txt.garden.bak` over `config.txt` on the boot partition. No reflash.
-- Logs: `journalctl -u garden-api.service`, `journalctl -u mqtt.service`, and
-  `gardyn.log` in the repo dir.
+- Logs: `journalctl -u garden-api.service`, `journalctl -u mqtt.service`, and in
+  the repo dir `mqtt.log` (MQTT service), `garden-api.log` (REST API), and
+  `gardyn.log` (only the `light`/`water` CLIs — each process writes its own file
+  so the two services never interleave).
 
 ## Updating later
 
 ```bash
 garden-update        # = bin/update.sh: git pull + pip install + restart services
 ```
+
+It pulls **whatever branch is checked out** (`git pull --ff-only`), so it only
+keeps you on the build branch if you were on it to begin with — one more reason
+to confirm the branch in step 1.
 
 ---
 
@@ -125,7 +146,9 @@ garden-update        # = bin/update.sh: git pull + pip install + restart service
 - **Always run `./bin/setup.sh --dry-run` first**, show the user the 8-line plan,
   and get an explicit OK before running the real install. Use `--yes` only if the
   user has agreed to skip the prompt.
-- Confirm you're on the **`v2-overhaul`** branch (`git branch --show-current`).
+- Confirm you're on **`feat/gardyn-tower-local`** (`git branch --show-current`).
+  If it says `main`, stop: that is the upstream mirror, and deploying it
+  reintroduces the pump defects this fork exists to fix.
 - The **simulator** (`python -m simulator.serve` / `mqtt_sim`) is for *off-Pi*
   testing only — do **not** run it on the Pi; the real services serve the app.
 - Expect a **reboot** between install and verification.
