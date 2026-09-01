@@ -408,6 +408,38 @@ The `button` event entity reads `unknown` until the physical button is pressed
 once; after that it reports `single` / `double` / `long` and works as an
 automation trigger.
 
+## How watering is guarded
+
+Every path that can energize the pump now refuses below `PUMP_CUTOFF_CM`, not
+just the Home Assistant buttons. That includes cron, which is how the tower
+actually waters — it previously had no check at all.
+
+The cron path cannot read the sensor itself: a second process triggering the
+ultrasonic sensor cross-talks with `mqtt.service`'s polling and both come back
+wrong (the same trap described above). So the service records its
+median-filtered verdict to `~/.garden_state.json` on every check, and
+`bin/water.sh` consults that:
+
+```bash
+# what the guard would decide right now, without running the pump
+cd ~/garden-of-eden && PYTHONPATH=. venv/bin/python -m app.lib.water_guard
+#   exit 0 = would water, exit 1 = would refuse
+
+# water anyway, below the cutoff (the escape hatch from iot-root#83)
+water 180 --override-low-water-level
+```
+
+A verdict older than `WATER_READING_MAX_AGE_SECONDS` (default 3 × the poll
+interval, so 540s) is ignored — that is what stops a stopped service from
+withholding water forever.
+
+**Verified on this tower** across aware/naive timestamps × fresh/stale, a
+garbage timestamp and a corrupt state file: it refuses only on a fresh reading
+genuinely below the cutoff. Worth re-running after any change to
+`app/lib/water.py` or `water_guard.py`, because the failure that matters is
+silent — a guard that refuses when it should allow looks identical to a guard
+working correctly until the plants dry out.
+
 ## Known quirks
 
 - **AM2320 intermittent I2C failures.** The sensor NAKs its first wake-up probe,
@@ -416,9 +448,13 @@ automation trigger.
   than aborting the whole run.
 - **Camera freshness.** `IMAGE_INTERVAL_SECONDS` defaults to 3600, so dashboard
   images look stale between captures. Use Refresh All for an immediate frame.
-- **The dry-run guard fails open.** If the distance read itself fails, the pump is
-  allowed to run — matching upstream's `is_water_low()` contract, so a dead sensor
-  cannot brick the pump. It is logged when it happens.
+- **The dry-run guard fails open, deliberately and everywhere.** A failed
+  distance read, a stale verdict, a corrupt state file, an unparseable timestamp
+  — all let the pump run. Withholding water indefinitely is a worse failure than
+  the dry run this guards against, so every branch errs that way and says so in
+  the log. `main()` in `app/lib/water_guard.py` carries a catch-all for the same
+  reason: an unhandled exception was once the only path that could refuse, and
+  it did (see below).
 
 ## Open items
 
@@ -435,6 +471,14 @@ automation trigger.
       percentage are unaffected.
 - [ ] **The pump ON path has never been exercised under test.** Every other path
       is verified; this one energizes the motor and was left for a physical check.
+      The *refusal* path is verified — see "How watering is guarded" — but that
+      only proves the pump stays off, not that it runs correctly when allowed.
+- [ ] **The cutoff depth has not been checked against the pump intake.**
+      `PUMP_CUTOFF_CM=17.6` leaves ~5.5 cm of water, chosen as ~30% remaining
+      rather than measured against the height the intake starts pulling air.
+      One measurement with the reservoir out would turn it from a judgement into
+      a fact. The old single threshold left only ~3 cm, so this is already the
+      safer of the two, but neither number is grounded in the hardware.
 - [ ] **GPIO header bridge scan not run.** A `pinctrl`-based script exists at
       `~/gpio-bridge-test.sh` to check the resoldered 40-pin header. Requires the
       harness unplugged with `mqtt.service` and `pigpiod` stopped. A multimeter
