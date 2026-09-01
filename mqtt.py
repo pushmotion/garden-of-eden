@@ -489,6 +489,56 @@ def water_ok_for_pump(client):
     return False
 
 
+def restore_water_threshold():
+    """Reinstate a threshold set from Home Assistant across a restart.
+
+    The HA number writes to a module global. Without this the process comes back
+    on the ``.env`` value while HA still shows the retained one it last wrote,
+    and neither side has any way to notice they disagree.
+
+    ``.env`` still wins on a tower that has never set the number, so the config
+    file remains the source of truth until something deliberately overrides it.
+    """
+    global WATER_LOW_CM
+    saved = state_lib.load_state().get("water_low_cm")
+    if saved is None:
+        return
+    try:
+        WATER_LOW_CM = float(saved)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring unusable persisted water threshold: %r", saved)
+        return
+    logger.info("Restored the water-low threshold from state: %.2fcm", WATER_LOW_CM)
+
+
+def publish_water_thresholds(client):
+    """Publish both thresholds so Home Assistant is never left guessing.
+
+    Neither was published on connect, so the number entity read *unknown* on a
+    fresh HA install until somebody happened to write it -- a control with no
+    value, governing a guard that was already running.
+
+    The cutoff goes out as a plain sensor rather than a settable number, for the
+    same reason "Max Pump Run Time" does: it is a safety limit, not a per-run
+    setting. Seeing it matters; nudging it from a phone does not.
+    """
+    # "unavailable" rather than silence when alerting is off: Home Assistant
+    # greys the control out, which says "this does nothing right now". Publishing
+    # nothing leaves it blank forever, indistinguishable from a service that
+    # never started.
+    client.publish(
+        BASE_TOPIC + "/water/low/cm",
+        f"{WATER_LOW_CM:.2f}" if WATER_LOW_CM else "unavailable",
+        retain=True,
+    )
+    cutoff = effective_pump_cutoff()
+    client.publish(
+        BASE_TOPIC + "/water/pump/cutoff",
+        f"{cutoff:.2f}" if cutoff else "unavailable",
+        retain=True,
+    )
+
+
 def publish_water_low_mode(client):
     if WATER_LOW_CM not in (None, 0):
         mode = "Enabled"
@@ -731,6 +781,23 @@ def send_discovery_messages(client):
         "step": 0.5,
         "unit_of_measurement": "cm",
         "device_class": "distance",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # The airgap at which the pump is actually refused, as opposed to the
+    # threshold above at which it merely warns. Read-only on purpose, like
+    # "Max Pump Run Time": a safety limit is not a per-run setting, and one
+    # nudged from a phone is one nobody remembers changing. Set it in .env.
+    TEMP_CONFIG_TOPIC = f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_cutoff_cm/config"
+    temp_config_payload = {
+        "name": "Pump Cutoff",
+        "unique_id": IDENTIFIER + "_pump_cutoff_cm",
+        "state_topic": BASE_TOPIC + "/water/pump/cutoff",
+        "unit_of_measurement": "cm",
+        "device_class": "distance",
+        "icon": "mdi:water-off-outline",
+        "entity_category": "diagnostic",
         "device": device_info,
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
@@ -1253,6 +1320,9 @@ def on_connect(client, userdata, flags, rc, properties=None):
     # Mark the device online (counterpart to the LWT 'offline' set before connect).
     client.publish(AVAILABILITY_TOPIC, "online", retain=True)
     send_discovery_messages(client)
+    # Both thresholds, before the state that depends on them: the number entity
+    # otherwise sits at "unknown" until someone writes it.
+    publish_water_thresholds(client)
     publish_water_low_mode(client)
     # Publish a fresh low-water state on every connect so a stale retained "ON"
     # (e.g. from before a restart) clears immediately instead of lingering.
@@ -1346,7 +1416,12 @@ def on_message(client, userdata, msg):
         elif topic_suffix == "water/low/cm/set":
             try:
                 WATER_LOW_CM = float(payload)
-                client.publish(BASE_TOPIC + "/water/low/cm", f"{WATER_LOW_CM:.2f}", retain=True)
+                # Persist it, or the next restart silently reverts to the .env
+                # value while Home Assistant keeps showing this retained one --
+                # the dashboard and the running guard disagreeing with nothing
+                # to indicate it.
+                state_lib.save_state(water_low_cm=WATER_LOW_CM)
+                publish_water_thresholds(client)
                 publish_water_low_mode(client)
                 update_water_low_state(client)
             except ValueError:
@@ -1789,6 +1864,10 @@ def graceful_shutdown(signum, frame):
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, graceful_shutdown)
     signal.signal(signal.SIGINT, graceful_shutdown)
+
+    # Before connecting: on_connect publishes the threshold, and the water
+    # polling threads compare against it, so both must see the restored value.
+    restore_water_threshold()
 
     logger.info(f"Connecting to {BROKER} on port {PORT} with keep alive {KEEP_ALIVE_INTERVAL}")
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
