@@ -132,7 +132,35 @@ and the nightly refresh prunes spent entries.
 `GET`/`POST`/`DELETE` `/schedule/pump/once`.
 
 `MAX_PUMP_RUN_SECONDS` (300) hard-caps any single run on every path — MQTT, REST,
-CLI and cron — and is now surfaced read-only as `Max Pump Run Time`.
+CLI and cron — and is now surfaced read-only as `Max Pump Run Time`. The cap is
+armed by the pump *being on* rather than by whoever switched it on, so a run
+started by cron, or by a `water.sh` killed before its exit trap, is covered too.
+
+### 3b. The dry-run guard covers every path, not just the buttons
+
+`WATER_LOW_CM` was read only by the MQTT command handler. `bin/water.sh` — what
+cron runs, and so how the tower actually waters — had no water check at all, and
+neither did `POST /pump/on` or `/pump/run`. Every unattended run was unguarded.
+
+The CLI can't take its own reading (two processes on one ultrasonic sensor
+cross-talk and both come back wrong), so `mqtt.py` records its median-filtered
+verdict and `bin/water.sh` consults that, ignoring it once stale.
+
+| Setting | Role | Default |
+|---|---|---|
+| `WATER_LOW_CM` | **alert** — early enough to be a useful "top me up" | `11` (60% on the nominal tank) |
+| `PUMP_CUTOFF_CM` | **interlock** — where watering actually stops | `15.5` (30%); unset falls back to `WATER_LOW_CM` |
+
+One value could not be both: tuned as an alert it refuses to water a
+two-thirds-full tank, tuned as a cutoff the alert only fires when it is nearly
+too late. Both are *airgaps*, so both are meaningless without `WATER_FULL_CM` /
+`WATER_EMPTY_CM` — a threshold copied between towers means a different
+percentage on each.
+
+**The guard fails open on purpose.** A failed read, a stale verdict, a corrupt
+state file — all let the run proceed, because withholding water indefinitely is
+a worse failure than the dry run being guarded against.
+`water --override-low-water-level` forces a run regardless.
 
 ### 4. Home Assistant: deterministic entities, multi-tower safe
 
@@ -264,6 +292,7 @@ See [`docs/simulator.md`](docs/simulator.md).
     - [1. Pump control was unusable from Home Assistant](#1-pump-control-was-unusable-from-home-assistant)
     - [2. Actuator state now reflects the hardware](#2-actuator-state-now-reflects-the-hardware)
     - [3. Scheduling: scalar edits no longer destroy a schedule](#3-scheduling-scalar-edits-no-longer-destroy-a-schedule)
+    - [3b. The dry-run guard covers every path, not just the buttons](#3b-the-dry-run-guard-covers-every-path-not-just-the-buttons)
     - [4. Home Assistant: deterministic entities, multi-tower safe](#4-home-assistant-deterministic-entities-multi-tower-safe)
     - [5. Web UI](#5-web-ui)
     - [6. Grow cycle](#6-grow-cycle)
