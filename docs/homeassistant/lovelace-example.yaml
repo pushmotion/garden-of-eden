@@ -1,7 +1,22 @@
 # Example Home Assistant Lovelace dashboard for a Gardyn (issue #63).
 #
-# A plain single-column card list. For a grouped, status-first layout using
-# HA's Sections view, see pm-example.yaml in this folder.
+# A plain single-column card list, kept as the simplest possible starting point.
+#
+# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 25 of the 37 entities
+# mqtt.py discovers. If you want the whole device, use pm-example.yaml in this
+# folder; it is the dashboard these towers actually run.
+#
+# Not shown here:
+#   button.<id>_pump_run_once      time.<id>_sched_pump_manual_time
+#   sensor.<id>_pump_once_next     sensor.<id>_pump_next_run
+#   sensor.<id>_pump_max_seconds   button.<id>_refresh_all
+#   sensor.<id>_refresh_status     sensor.<id>_refresh_last
+#   sensor.<id>_water_depth        sensor.<id>_water_gallons
+#   sensor.<id>_water_low_mode     sensor.<id>_log
+#
+# Those cover one-time pump runs, the derived water readings, the forced-refresh
+# controls and the diagnostic log -- so a tower driven from this dashboard alone
+# cannot water on demand and shows the raw airgap rather than depth or gallons.
 #
 # All entities are created automatically via MQTT discovery by mqtt.py, which
 # pins each object_id to its unique_id. Entity ids are therefore always
