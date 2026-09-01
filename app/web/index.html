@@ -107,9 +107,11 @@
     button.ghost { background:var(--surface); color:var(--green-ink); border:1px solid var(--line-2);
       border-radius:11px; padding:8px 14px; font-size:.82rem; font-weight:600; cursor:pointer; }
     button.ghost:hover { border-color:var(--green); color:var(--green); }
+    /* --surface, not #fff: a literal here paints a white field under the dark
+       theme's near-white --ink, so every time/number/key input was unreadable. */
     input[type=time],input[type=number],input[type=password],select{
       font:inherit; font-size:.85rem; padding:8px 10px; border:1px solid var(--line-2); border-radius:10px;
-      background:#fff; color:var(--ink); }
+      background:var(--surface); color:var(--ink); }
     input:focus,select:focus{ outline:none; border-color:var(--green-2); box-shadow:0 0 0 3px rgba(63,155,110,.15); }
     .muted { color:var(--faint); font-size:.76rem; }
 
@@ -135,6 +137,16 @@
     .pill button { border:0; background:rgba(0,0,0,.06); color:var(--amber); border-radius:999px;
       padding:2px 9px; font-size:.7rem; cursor:pointer; font-weight:700; }
     .runs .run { display:flex; align-items:center; gap:9px; margin-top:9px; }
+    /* "what happens next" strip: read-only, above the editor that produces it */
+    .upnext { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1px;
+              background:var(--line); border:1px solid var(--line); border-radius:8px;
+              overflow:hidden; margin-top:14px; }
+    .upnext .up { background:var(--surface); padding:9px 12px; display:flex; flex-direction:column; gap:2px; }
+    .upnext .l { font-size:.66rem; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); }
+    .upnext .v { font-size:.92rem; font-weight:600; }
+    .upnext .v.warn { color:var(--red); }
+    .once { margin-top:16px; padding-top:14px; border-top:1px solid var(--line); }
+    .once .runs .run .when { font-weight:600; }
     .sched-days { display:flex; flex-direction:column; margin-top:10px; }
     .sched-day { display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-top:1px solid var(--line); }
     .sched-day .dname { width:42px; flex:0 0 42px; padding-top:6px; font-weight:700; color:var(--muted); text-transform:capitalize; }
@@ -396,6 +408,31 @@
         <span class="muted" style="margin-left:auto">tap a preset, then Save</span>
       </div>
 
+      <!-- What the saved schedule does next, and whether cron agrees with it.
+           The heatmap above shows what is configured; this shows what will
+           actually happen, which is the question the editor cannot answer. -->
+      <div class="upnext">
+        <div class="up"><span class="l">Next light change</span><span class="v" id="next-light">—</span></div>
+        <div class="up"><span class="l">Next pump run</span><span class="v" id="next-pump">—</span></div>
+        <div class="up"><span class="l">Installed cron</span><span class="v" id="cron-state">—</span></div>
+      </div>
+
+      <!-- A one-off run writes its own dated cron entry, so arming one cannot
+           rewrite or cancel the recurring schedule. -->
+      <div class="once">
+        <div class="row">
+          <strong>Run the pump once</strong>
+          <span class="muted">a single dated job — the recurring schedule is left alone</span>
+        </div>
+        <div class="row" style="margin-top:9px">
+          <label>at <input type="time" id="once-time" value="12:00"></label>
+          <label>for <input type="number" id="once-dur" min="1" max="5" value="3" style="width:58px"
+                 onchange="clampPumpMin(this)"> <span class="muted">min (max 5)</span></label>
+          <button class="btn" onclick="armOnce()">Arm run</button>
+        </div>
+        <div class="runs" id="once-pending"></div>
+      </div>
+
       <details class="customize">
         <summary>Customize per day</summary>
         <div class="row" style="margin-top:12px">
@@ -472,6 +509,24 @@
         if (r.status === 401) needKey();
         conn(r.ok); toast(d.message || d.error || (r.ok ? "ok" : "error " + r.status), !r.ok); return d;
       } catch (e) { conn(false); toast(e.name === "AbortError" ? "request timed out" : "error: " + e.message, true); }
+    }
+    // POST without the toast, for calls the page makes on its own (a refresh
+    // loop must not narrate itself). Returns null on any failure.
+    async function postQuiet(path, body) {
+      try {
+        const r = await fetchT(path, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(body || {}) });
+        if (r.status === 401) { needKey(); return null; }
+        if (!r.ok) return null;
+        conn(true); return await r.json();
+      } catch { return null; }
+    }
+    async function del(path) {
+      try {
+        const r = await fetchT(path, { method: "DELETE", headers: headers() });
+        let d = {}; try { d = await r.json(); } catch {}
+        if (r.status === 401) needKey();
+        conn(r.ok); toast(d.message || d.error || (r.ok ? "ok" : "error " + r.status), !r.ok); return d;
+      } catch (e) { conn(false); toast("error: " + e.message, true); }
     }
     // Lightweight reachability probe for the connection dot.
     async function ping() {
@@ -650,6 +705,88 @@
 
     // Clamp a pump duration input to the 1..5 minute safety range.
     function clampPumpMin(input) { let v = Math.round(+input.value || 0); v = Math.min(5, Math.max(1, v)); input.value = v; return v; }
+
+    // ---- What happens next, and whether cron agrees with the saved schedule ----
+    // "in 2h 15m" reads better than a bare timestamp for something imminent, but
+    // a run four days out wants the date. Switch at 24h.
+    function whenText(iso) {
+      if (!iso) return "—";
+      const at = new Date(iso); if (isNaN(at)) return "—";
+      const mins = Math.round((at - Date.now()) / 60000);
+      if (mins < 0) return "due now";
+      if (mins < 60) return `in ${mins} min · ${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      if (mins < 1440) {
+        const h = Math.floor(mins / 60), m = mins % 60;
+        return `in ${h}h${m ? " " + m + "m" : ""} · ${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      }
+      return at.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    }
+
+    async function loadNext() {
+      try {
+        const n = await get("/schedule/next");
+        $("next-light").textContent = n.light
+          ? `${n.light.on ? "on " + n.light.brightness + "%" : "off"} · ${whenText(n.light.at)}`
+          : "schedule off";
+        $("next-pump").textContent = n.pump && n.pump.at ? whenText(n.pump.at) : "schedule off";
+      } catch { $("next-light").textContent = $("next-pump").textContent = "n/a"; }
+    }
+
+    // The saved schedule and the installed crontab can disagree — a hand-edited
+    // crontab, or an apply that failed partway. Compile the saved schedule
+    // without applying it and diff against what is actually installed.
+    async function loadCronState() {
+      const el = $("cron-state");
+      try {
+        const saved = await get("/schedule");
+        const [installed, compiled] = await Promise.all([
+          get("/schedule/cron"),
+          postQuiet("/schedule/validate", saved),
+        ]);
+        if (!compiled || !compiled.valid) { el.textContent = "schedule invalid"; el.className = "v warn"; return; }
+        const a = (installed.cron_lines || []).slice().sort().join("\n");
+        const b = (compiled.cron_lines || []).slice().sort().join("\n");
+        const n = installed.count || 0;
+        el.textContent = a === b ? `${n} job${n === 1 ? "" : "s"} · matches saved` : `${n} job${n === 1 ? "" : "s"} · differs from saved`;
+        el.className = a === b ? "v" : "v warn";
+      } catch { el.textContent = "n/a"; el.className = "v"; }
+    }
+
+    // ---- One-time pump runs (their own cron marker; never touch the schedule) ----
+    async function loadOnce() {
+      const box = $("once-pending"); box.innerHTML = "";
+      let d = null;
+      try { d = await get("/schedule/pump/once"); } catch { return; }
+      if (!d.count) {
+        const none = document.createElement("div");
+        none.className = "muted"; none.style.marginTop = "9px";
+        none.textContent = "nothing armed";
+        box.appendChild(none); return;
+      }
+      d.runs.forEach(r => {
+        const row = document.createElement("div"); row.className = "run";
+        const when = document.createElement("span"); when.className = "when";
+        when.textContent = whenText(r.at);
+        const len = document.createElement("span"); len.className = "muted";
+        len.textContent = `${Math.round(r.seconds / 60)} min run`;
+        row.append(when, len); box.appendChild(row);
+      });
+      // The endpoint cancels every pending one-off, so say how many that is
+      // rather than showing a per-row X that would quietly clear the others.
+      const row = document.createElement("div"); row.className = "run";
+      const btn = document.createElement("button"); btn.className = "ghost";
+      btn.textContent = d.count === 1 ? "Cancel it" : `Cancel all ${d.count}`;
+      btn.onclick = () => del("/schedule/pump/once").then(loadOnce);
+      row.appendChild(btn); box.appendChild(row);
+    }
+
+    async function armOnce() {
+      const time = $("once-time").value;
+      if (!time) { toast("pick a time first", true); return; }
+      const r = await postQuiet("/schedule/pump/once", { time, duration: clampPumpMin($("once-dur")) });
+      if (r && r.at) { toast("armed " + whenText(r.at)); loadOnce(); loadNext(); }
+      else toast("could not arm the run", true);
+    }
 
     function renderSchedule() {
       renderDays("light", lightDays, $("sch-light-days"));
@@ -874,12 +1011,14 @@
         renderSchedule();
       } catch {}
     }
-    function saveSchedule() {
-      post("/schedule", {
+    async function saveSchedule() {
+      await post("/schedule", {
         lights: { enabled: $("sch-lights-en").checked, days: lightDays },
         pump: { enabled: $("sch-pump-en").checked, days: pumpDays },
         vacation: { enabled: $("sch-vacation-en").checked, until: $("sch-vacation-until").value || null },
       });
+      // A save rewrites the crontab, so both derived readouts are now stale.
+      loadNext(); loadCronState();
     }
 
     const resolveTheme = pref => pref === "auto" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : pref;
@@ -920,7 +1059,11 @@
     $("set-caminterval").value = camInterval;
     $("set-units").value = units; applyUnitLabels();
     loadSystem(); refresh(); loadGrow(); loadSchedule(); loadPods(); loadCams(); loadTimelapses(); syncToggles(); ping();
+    loadNext(); loadOnce(); loadCronState();
     setInterval(refresh, 30000);
+    // "in 12 min" goes stale on its own even when nothing changes, and a one-off
+    // disappears once it fires, so re-read both on a slow timer.
+    setInterval(() => { loadNext(); loadOnce(); }, 60000);
     setInterval(ping, 10000);
   </script>
 </body>

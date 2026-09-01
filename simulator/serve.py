@@ -30,10 +30,24 @@ from app.lib.logging_config import configure_logging  # noqa: E402
 from app.sensors.camera import camera as _camera  # noqa: E402
 from app.sensors.schedule import schedule as _schedule  # noqa: E402
 
-# Never touch the host's real crontab in simulation — schedules are still saved
-# to the sandboxed SCHEDULE_FILE so the UI round-trips, but no cron is written.
-_schedule._read_crontab = lambda: []
-_schedule._write_crontab = lambda lines: None
+# Never touch the host's real crontab in simulation. Hold the compiled lines in
+# memory instead of discarding them: returning a constant [] made one-time pump
+# runs unobservable (armed, then absent from GET /schedule/pump/once) and left
+# the cron-vs-saved comparison permanently reading "0 jobs", so neither could be
+# exercised off-Pi.
+_fake_crontab = []
+
+
+def _sim_read_crontab():
+    return list(_fake_crontab)
+
+
+def _sim_write_crontab(lines):
+    _fake_crontab[:] = list(lines)
+
+
+_schedule._read_crontab = _sim_read_crontab
+_schedule._write_crontab = _sim_write_crontab
 
 # 1x1 JPEG used as a stand-in for real camera frames.
 _PLACEHOLDER_JPEG = base64.b64decode(
