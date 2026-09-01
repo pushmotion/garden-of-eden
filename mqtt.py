@@ -449,6 +449,17 @@ def send_discovery_messages(client):
 
     def pub(topic, payload, availability=True):
         body = {**payload, **avail} if availability else dict(payload)
+        # Pin the entity_id rather than letting HA derive one. Without object_id
+        # HA builds the id from the *display name* under rules that have changed
+        # between releases and depend on whether the device name collides with
+        # another -- which is how one tower ended up with both
+        # `sensor.gardyn_temperature` and `sensor.gardyn_1_gardyn_water_depth`.
+        # Deriving it from unique_id makes every id `<IDENTIFIER>_<suffix>`: the
+        # same shape on every unit, so a dashboard ports between towers with a
+        # find/replace of the identifier, and renaming an entity in the HA UI
+        # can never move it out from under one.
+        if "unique_id" in body:
+            body.setdefault("object_id", body["unique_id"])
         client.publish(topic, json.dumps(body), retain=True)
 
     # Config for Light
@@ -665,7 +676,6 @@ def send_discovery_messages(client):
         "image_topic": BASE_TOPIC + "/image/upper_camera",
         "encoding": "",
         "content_type": "image/jpeg",
-        "object_id": IDENTIFIER + "_upper_camera",
         "device": device_info,
     }
     # Image entities aren't gated on availability (the MQTT image platform
@@ -680,7 +690,6 @@ def send_discovery_messages(client):
         "image_topic": BASE_TOPIC + "/image/lower_camera",
         "encoding": "",
         "content_type": "image/jpeg",
-        "object_id": IDENTIFIER + "_lower_camera",
         "device": device_info,
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload, availability=False)

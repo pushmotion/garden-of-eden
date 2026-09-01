@@ -22,5 +22,5 @@ trigger:
 action:
   - service: fan.turn_{{trigger.id}}
     target:
-      entity_id: fan.gardyn_pump
+      entity_id: light.gardyn_01_pump
 mode: queued
