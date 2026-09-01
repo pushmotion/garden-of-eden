@@ -14,6 +14,7 @@ import board
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 import config
+from app.lib import ambient
 
 logger = logging.getLogger(__name__)
 
@@ -37,25 +38,31 @@ class TemperatureSensor:
         except Exception as exc:
             logger.error("Failed to initiate temperature sensor: %s", exc)
 
+    def _read_once(self):
+        """One reading, re-probing the bus if the handle was dropped."""
+        if self._sensor is None:
+            self._sensor = _make_sensor()
+        try:
+            return self._sensor.temperature
+        except Exception:  # transient [Errno 5] etc - drop the handle so the
+            self._sensor = None  # next attempt re-probes
+            time.sleep(0.2)
+            raise
+
     def read(self):
-        """Return temperature in deg C. Retries transient I2C errors; raises
-        only if all attempts fail."""
-        last_exc = None
-        for attempt in range(3):
-            if self._sensor is None:
-                try:
-                    self._sensor = _make_sensor()  # re-probe the bus
-                except Exception as exc:
-                    last_exc = exc
-                    time.sleep(0.2)
-                    continue
-            try:
-                return self._sensor.temperature
-            except Exception as exc:  # transient [Errno 5] etc — drop handle, retry
-                last_exc = exc
-                self._sensor = None
-                time.sleep(0.2)
-        raise last_exc
+        """Return temperature in deg C, filtered.
+
+        Retrying on exceptions is not enough on the AM2320: it intermittently
+        returns the *humidity* value in the temperature slot, which raises
+        nothing and so sailed straight through to Home Assistant -- one bad read
+        showed a 125 F room until the next cycle. ``stable_reading`` takes a
+        median and drops implausible values. See app/lib/ambient.py.
+        """
+        return ambient.stable_reading(
+            self._read_once,
+            ambient.TEMPERATURE_RANGE_C,
+            label="temperature",
+        )
 
 
 temperature_sensor = TemperatureSensor()
