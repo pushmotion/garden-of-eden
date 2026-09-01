@@ -39,7 +39,13 @@ KEEP_ALIVE_INTERVAL = _get_int("MQTT_KEEPALIVE_INTERVAL", 60)
 VERSION = os.getenv("MQTT_VERSION", "1.0.0")
 IDENTIFIER = os.getenv("MQTT_IDENTIFIER", "gardyn-xx")
 MODEL = os.getenv("MQTT_DEVICE_MODEL", "gardyn 3.0")
-BASE_TOPIC = os.getenv("MQTT_BASETOPIC", "gardyn")
+# Defaults to the identifier so each tower gets its own topic namespace. A
+# shared base topic is not cosmetic: mqtt.py subscribes to BASE_TOPIC + "/#",
+# so two units on the same one receive each other's commands and one tower's
+# light switch drives both. It also names the Home Assistant device, so sharing
+# it makes HA disambiguate the duplicate and mangle every entity id.
+# Override only to keep an existing single-tower deployment on its old topics.
+BASE_TOPIC = os.getenv("MQTT_BASETOPIC", IDENTIFIER)
 
 USERNAME = os.getenv("MQTT_USERNAME")
 PASSWORD = os.getenv("MQTT_PASSWORD")

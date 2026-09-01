@@ -270,18 +270,29 @@ on the Pi is affected — the schedule, grow state and crontab live outside HA.
 
 ### Running more than one tower
 
-Pinned ids make the *entities* unambiguous, but two towers still need separate
-**topic namespaces**, because `mqtt.py` subscribes to `BASE_TOPIC + "/#"` and
-every state/command topic hangs off `BASE_TOPIC`. Two units both on the default
-`MQTT_BASETOPIC=gardyn` would receive each other's commands — turning on one
-tower's light would turn on both.
-
-Per tower, set **both**, to the same value:
+**Set one line per tower:**
 
 ```ini
-MQTT_IDENTIFIER=gardyn_02     # namespaces entity ids + discovery object_ids
-MQTT_BASETOPIC=gardyn_02      # namespaces state/command topics and the HA device name
+MQTT_IDENTIFIER=gardyn_02
 ```
+
+That is the whole configuration. `MQTT_BASETOPIC` defaults to `MQTT_IDENTIFIER`,
+so the identifier namespaces the state/command topics, the HA device name, and
+every entity id together.
+
+This used to require setting both, and getting it wrong was silent and bad:
+`mqtt.py` subscribes to `BASE_TOPIC + "/#"` and every state/command topic hangs
+off `BASE_TOPIC`, so two units left on a shared base topic receive each other's
+commands — one tower's light switch drives both. Since `.env-dist` also
+hardcoded `MQTT_BASETOPIC=gardyn`, following the documented setup produced
+exactly that collision. Both are fixed; override `MQTT_BASETOPIC` only to keep
+an existing single-tower deployment on its old topics.
+
+The discovery *topic* keeps its `gardyn` node_id segment
+(`homeassistant/sensor/gardyn/<object_id>/config`) on purpose. HA identifies
+entities by `unique_id` and `object_id`, both already per-tower, so the segment
+is only a grouping label — and moving it would strand the old retained configs
+at their old topics, leaving HA showing every entity twice.
 
 The dashboard then ports by find/replacing `gardyn_01` with `gardyn_02`. Lovelace
 is static YAML and does not auto-populate for a new device — one view per tower
