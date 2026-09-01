@@ -84,3 +84,37 @@ def gallons_remaining(distance_cm, full_cm, empty_cm, capacity_gal):
     fraction = (empty_cm - distance_cm) / span
     fraction = max(0.0, min(1.0, fraction))
     return round(fraction * capacity_gal, 1)
+
+
+def tank_readings(distance_cm, full_cm, empty_cm, capacity_gal):
+    """Every derived water figure, from one airgap and one calibration.
+
+    Returns ``{"level_cm", "depth_cm", "percent", "gallons"}`` -- the numbers
+    Home Assistant and the web UI both display. This exists so the two cannot
+    disagree. Before it, the MQTT service derived depth and percent inline while
+    the web page re-derived percent in JavaScript against the *default* 5/20 cm
+    calibration, so any tower calibrated to anything else showed two different
+    fill levels for the same tank.
+
+    Derived values are ``None`` when the reading failed, or when the calibration
+    is unusable because ``empty_cm`` is not the larger airgap of the pair.
+    ``level_cm`` passes through regardless: the raw airgap is what the hardware
+    measured, and it stays true whether or not the tank has been calibrated.
+
+    ``depth_cm`` is measured up from the tank floor and is only clamped at zero,
+    not at the top -- a tank filled past the calibrated full mark should read as
+    the overfill it is rather than being quietly capped.
+    """
+    readings = {"level_cm": distance_cm, "depth_cm": None, "percent": None, "gallons": None}
+    if distance_cm is None:
+        return readings
+
+    span = empty_cm - full_cm
+    if span <= 0:
+        return readings
+
+    readings["depth_cm"] = max(0.0, empty_cm - distance_cm)
+    fraction = max(0.0, min(1.0, (empty_cm - distance_cm) / span))
+    readings["percent"] = fraction * 100.0
+    readings["gallons"] = gallons_remaining(distance_cm, full_cm, empty_cm, capacity_gal)
+    return readings
