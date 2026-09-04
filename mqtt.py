@@ -24,6 +24,7 @@ from app.sensors.distance.distance import MeasurementError
 from app.sensors.distance.routes import distance_control
 from app.sensors.humidity.humidity import humidity_sensor
 from app.sensors.light.routes import light_control
+from app.sensors.pcb_temp import over_temp as over_temp_lib
 from app.sensors.pcb_temp.pcb_temp import get_pcb_temperature
 from app.sensors.pump.routes import pump_control
 from app.sensors.schedule import schedule as sched_lib
@@ -43,6 +44,8 @@ from config import (
     LOWER_IMAGE_PATH,
     MAX_PUMP_RUN_SECONDS,
     MODEL,
+    OVER_TEMP_HIGH,
+    OVER_TEMP_HYSTERESIS,
     PASSWORD,
     PORT,
     PUMP_CUTOFF_CM,
@@ -107,6 +110,25 @@ button_pin = BUTTON_PIN
 button = Button(
     button_pin, pin_factory=pin_factory, bounce_time=0.2, hold_time=2
 )  # hold_time = 2 seconds for long press detection
+
+# Hardware over-temperature alert. The PCT2075 drives OVER_TEMP_ALERT_PIN from
+# its own comparator, so this fires even if the polling threads below are wedged
+# -- which is the only reason it earns a place over just watching the published
+# temperature. Optional on purpose: a tower whose chip or pin is not wired must
+# still run, so a failure here logs and leaves the entity absent rather than
+# taking the service down with it.
+over_temp_alert = None
+try:
+    _trip, _clear, _active_high = over_temp_lib.configure(OVER_TEMP_HIGH, OVER_TEMP_HYSTERESIS)
+    over_temp_alert = over_temp_lib.alert_pin(pin_factory=pin_factory)
+    logger.info(
+        "Over-temp alert armed: trips at %.1f C, clears at %.1f C, %s",
+        _trip,
+        _clear,
+        "active-high" if _active_high else "active-low",
+    )
+except Exception as exc:
+    logger.warning("Over-temp alert unavailable (%s); continuing without it", exc)
 
 # Variables to track the state of the light and pump
 light_state = False
@@ -763,6 +785,30 @@ def send_discovery_messages(client):
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
 
+    # "PCB Over Temperature" -- the PCT2075's own comparator output, not a
+    # threshold applied to the published reading. It reports the carrier board,
+    # which runs 8-14 C cooler than the SoC, so this is a "something is wrong in
+    # the enclosure" alarm rather than a processor guard; Raspberry Pi firmware
+    # already throttles the SoC at 85 C on its own.
+    #
+    # Diagnostic, and notify-only by design: at the configured trip point there
+    # is no emergency to act on automatically, and a false positive that cut the
+    # lights or the pump would cost a grow cycle to save nothing.
+    TEMP_CONFIG_TOPIC = f"homeassistant/binary_sensor/gardyn/{IDENTIFIER}_pcb_over_temp/config"
+    temp_config_payload = {
+        "name": "PCB Over Temperature",
+        "unique_id": IDENTIFIER + "_pcb_over_temp",
+        "platform": "mqtt",
+        "state_topic": BASE_TOPIC + "/pcb/over_temp/state",
+        "device_class": "problem",
+        "entity_category": "diagnostic",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:thermometer-alert",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
     # Config for Water Low Binary Sensor
     TEMP_CONFIG_TOPIC = f"homeassistant/binary_sensor/gardyn/{IDENTIFIER}_water_low/config"
     temp_config_payload = {
@@ -1370,6 +1416,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
     # Publish a fresh low-water state on every connect so a stale retained "ON"
     # (e.g. from before a restart) clears immediately instead of lingering.
     update_water_low_state(client)
+    publish_over_temp_state(client)
     publish_grow_state(client)
     publish_schedule_state(client)
     # Report the actuators' true duty cycle so HA never shows a stale retained
@@ -1379,6 +1426,13 @@ def on_connect(client, userdata, flags, rc, properties=None):
         publish_pump_state(client)
     except Exception:
         logger.exception("Could not publish initial actuator state")
+
+    # Edge-driven so a trip reaches HA in seconds instead of waiting out the
+    # half-hour PCB temperature cycle. Rebinding on reconnect is harmless --
+    # gpiozero holds one callback per edge, so this replaces rather than stacks.
+    if over_temp_alert is not None:
+        over_temp_alert.when_pressed = lambda: publish_over_temp_state(client)
+        over_temp_alert.when_released = lambda: publish_over_temp_state(client)
 
 
 def on_message(client, userdata, msg):
@@ -1548,12 +1602,30 @@ def on_message(client, userdata, msg):
         logger.exception(f"Error handling message on topic {msg.topic}: {e}")
 
 
+def publish_over_temp_state(client):
+    """Publish whether the PCT2075's alert pin is asserting.
+
+    Silent when the alert is unavailable: publishing OFF would claim the board
+    is fine when nothing is actually watching it, which is the one reading worse
+    than none. The entity stays unknown in HA instead, which is honest.
+    """
+    if over_temp_alert is None:
+        return
+    asserting = over_temp_alert.is_pressed
+    if asserting:
+        logger.warning("PCB OVER TEMPERATURE: alert pin asserted (trips at %.1f C)", OVER_TEMP_HIGH)
+    client.publish(BASE_TOPIC + "/pcb/over_temp/state", "ON" if asserting else "OFF")
+
+
 def publish_pcb_temperature(client):
     while True:
         try:
             pcb_temp = get_pcb_temperature()
             logger.info(f"Publishing PCB Temperature: {pcb_temp:.2f}°C")
             client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}")
+            # The pin's own edges publish immediately; this is the periodic
+            # resync, so a missed edge cannot leave HA stuck on a stale state.
+            publish_over_temp_state(client)
         except Exception as e:
             logger.error(f"Failed to read or publish PCB temperature: {e}")
         sleep(30 * 60)  # Publish frequency, every x seconds
@@ -1640,6 +1712,7 @@ def refresh_all(client):
             "pcb temperature",
             lambda: client.publish(BASE_TOPIC + "/pcb/temperature", f"{get_pcb_temperature():.2f}"),
         ),
+        ("pcb over-temp state", lambda: publish_over_temp_state(client)),
         (
             "temperature",
             lambda: client.publish(BASE_TOPIC + "/temperature", f"{temperature_sensor.read():.2f}"),

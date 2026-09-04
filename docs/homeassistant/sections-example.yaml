@@ -2,7 +2,7 @@
 #
 # One of two examples in this folder:
 #   sections-example.yaml  -- this file: grouped sections, status-first, and the
-#                             only one covering all 40 discovered entities
+#                             only one covering all 41 discovered entities
 #   lovelace-example.yaml  -- plain single-column card list, a 24-entity SUBSET;
 #                             see its header for what it omits
 #
@@ -340,6 +340,12 @@ views:
           - type: tile
             entity: sensor.gardyn_01_pcb_temp
             name: PCB Temperature
+          # Driven by the PCT2075's own comparator on GPIO 25, not by a
+          # threshold on the reading above -- so it still fires if the MQTT
+          # service is wedged. Notify-only; nothing cuts the lights or pump.
+          - type: tile
+            entity: binary_sensor.gardyn_01_pcb_over_temp
+            name: PCB Over Temperature
           - type: tile
             entity: sensor.gardyn_01_water_level
             name: Distance to Water
