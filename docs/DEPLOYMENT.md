@@ -519,6 +519,63 @@ genuinely below the cutoff. Worth re-running after any change to
 silent — a guard that refuses when it should allow looks identical to a guard
 working correctly until the plants dry out.
 
+## Over-temperature alert
+
+The PCT2075 that reports PCB temperature also drives a comparator output wired
+to GPIO 25. **The chip trips that pin itself**, so the alert fires even if
+`mqtt.service` is wedged -- which is the only reason it beats watching the
+published reading. It surfaces as the HA `PCB Over Temperature` problem sensor,
+**notify-only**: nothing cuts the lights or the pump.
+
+Thresholds are `OVER_TEMP_HIGH` / `OVER_TEMP_HYSTERESIS`, currently **65 / 58 C**,
+and they are measured rather than guessed. Three days of 2-minute samples, room
+air 22.3-26.4 C:
+
+| state | mean | max |
+|---|---|---|
+| lights off, pump off | 33.07 | 42.88 * |
+| lights on, pump off | 41.64 | 44.75 |
+| lights on, pump on | 43.39 | 43.62 |
+
+\* thermal lag at the 21:00 lights-off transition, not steady state.
+
+The lights are the heat source (+8.6 C between dark and lit); the pump adds ~2 C.
+Worst rise above room air was 18.9 C, which projects to ~56 C in a 35 C room --
+so 65 C cannot false-alarm in a hot week, and 58 C sits above that projection so
+it cannot chatter either.
+
+**This chip measures the carrier board, not the SoC.** Across 2046 paired
+samples the CPU ran 8.0-13.9 C hotter (mean 10.9). So 65 C here is roughly
+73-79 C at the processor, under Raspberry Pi's documented 85 C throttle point --
+the alert fires *before* the Pi protects itself, which is what makes it worth
+having. Treat it as "something is wrong in the enclosure", not as a CPU guard.
+
+For reference, the tower is nowhere near trouble: SoC peaked at 57.8 C over
+three days, `vcgencmd get_throttled` reads `0x0` (never, sticky since boot), and
+the ARM clock stays at its full 1000 MHz.
+
+### Do not use 36 / 34
+
+Those were the shipped defaults, and they fall *between* the lights-off idle and
+the lights-on normal -- the alert would have tripped every morning with the
+lights and cleared every night, alarming 16 hours a day while still looking like
+a working sensor. Nothing read them, so nothing broke.
+`tests/test_over_temp.py` now fails if either value drifts back into the normal
+operating envelope.
+
+### Checking it
+
+```bash
+# Read-only apart from applying the configured thresholds. Safe alongside
+# mqtt.service -- unlike the ultrasonic sensor, a second I2C reader is harmless.
+cd ~/garden-of-eden && venv/bin/python -m app.sensors.pcb_temp.over_temp
+```
+
+Polarity is the chip's active-low default and stays that way. The bench script
+this replaced inverted it, which is worse twice over: a half-configured process
+leaves the pin reading the opposite of what any other reader assumes, and an
+unpowered or disconnected chip reads as "fine" rather than failing loud.
+
 ## Known quirks
 
 - **AM2320 intermittent I2C failures.** The sensor NAKs its first wake-up probe,

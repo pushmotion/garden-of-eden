@@ -117,9 +117,33 @@ MAX_PUMP_RUN_SECONDS = _get_int("MAX_PUMP_RUN_SECONDS", 300)
 PCB_TEMP_ADDRESS = _get_int("PCB_TEMP_ADDRESS", 0x48)
 INA219_ADDRESS = _get_int("INA219_ADDRESS", 0x40)
 
-# Over-temperature thresholds for the PCB sensor (deg C)
-OVER_TEMP_HIGH = _get_float("OVER_TEMP_HIGH", 36)
-OVER_TEMP_HYSTERESIS = _get_float("OVER_TEMP_HYSTERESIS", 34)
+# Over-temperature thresholds (deg C) programmed into the PCT2075's comparator,
+# which drives OVER_TEMP_ALERT_PIN without software in the loop.
+#
+# These are measured, not guessed. Three days of 2-minute samples on a live
+# Gardyn (room air 22.3-26.4 C):
+#
+#   lights off            32.6-33.1 C
+#   lights on             41.6 C mean, 44.8 C peak   <- lights are the heat
+#   scheduled pump adds   ~2 C
+#   worst rise above room 18.9 C
+#
+# 65 C leaves ~20 C over anything observed and still clears a 35 C room (which
+# projects to ~56 C), so it cannot false-alarm in a hot week. It also trips
+# *before* the SoC does: the CPU runs 8-14 C above this chip, so 65 C here is
+# roughly 73-79 C at the processor, under Raspberry Pi's documented 85 C
+# throttle point. A threshold that only fires after the SoC has already
+# protected itself is not worth wiring up.
+#
+# The clear point must stay below the trip point or the comparator chatters;
+# 58 C is above the 35 C-room projection and 7 C below the trip.
+#
+# The previous defaults were 36/34 C, which falls *between* the lights-off idle
+# (33.1 C) and the lights-on normal (41.6 C): the alert would have tripped every
+# morning with the lights and cleared every night, alarming 16 hours a day while
+# still looking like a working sensor. Nothing read them, so nothing broke.
+OVER_TEMP_HIGH = _get_float("OVER_TEMP_HIGH", 65)
+OVER_TEMP_HYSTERESIS = _get_float("OVER_TEMP_HYSTERESIS", 58)
 
 # ---------------------------------------------------------------------------
 # Water level alerting

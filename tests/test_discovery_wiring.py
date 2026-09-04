@@ -101,6 +101,7 @@ class DiscoveryWiringTestCase(unittest.TestCase):
         m.publish_next_pump_run(client)
         m.publish_light_state(client)
         m.publish_pump_state(client)
+        m.publish_over_temp_state(client)
 
         published = {t[len(self.base) :] for t, _ in client.published if t.startswith(self.base)}
         declared = self._declared("state_topic") | self._declared("image_topic")

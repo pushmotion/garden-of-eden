@@ -47,6 +47,11 @@ def install():
     class _PCT2075:
         def __init__(self, *a, **k):
             self.temperature = 30.0
+            # PCT2075 power-on defaults, so a test can tell "configured" from
+            # "left alone".
+            self.high_temperature_threshold = 80.0
+            self.temperature_hysteresis = 75.0
+            self.high_temp_active_high = False
 
     pct = _module("adafruit_pct2075")
     pct.PCT2075 = _PCT2075
@@ -71,6 +76,10 @@ def install():
         def __init__(self, *a, **k):
             self.when_pressed = None
             self.when_released = None
+            self.is_pressed = False
+
+        def close(self):
+            pass
 
     gpiozero = _module("gpiozero")
     gpiozero.PWMLED = _PWMLED
