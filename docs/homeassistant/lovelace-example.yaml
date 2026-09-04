@@ -2,7 +2,7 @@
 #
 # A plain single-column card list, kept as the simplest possible starting point.
 #
-# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 24 of the 40 entities
+# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 24 of the 41 entities
 # mqtt.py discovers. If you want the whole device, use pm-example.yaml in this
 # folder; it is the dashboard these towers actually run.
 #

@@ -60,6 +60,12 @@ class FakeButton:
         self.when_pressed = None
         self.when_held = None
         self.when_released = None
+        # Never asserted in the simulator: the over-temp alert is a hardware
+        # comparator output, and there is no fake heat to trip it.
+        self.is_pressed = False
+
+    def close(self):
+        pass
 
 
 class FakePiGPIOFactory:
@@ -92,7 +98,11 @@ class _FakeTempHumidity:
 
 class _FakePCT2075:
     def __init__(self, *args, **kwargs):
-        pass
+        # Comparator registers, at the real part's power-on defaults until the
+        # over-temp alert configures them.
+        self.high_temperature_threshold = 80.0
+        self.temperature_hysteresis = 75.0
+        self.high_temp_active_high = False
 
     @property
     def temperature(self):
