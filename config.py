@@ -264,6 +264,18 @@ HARVEST_REMINDER_DAYS = _get_int("HARVEST_REMINDER_DAYS", 35)
 NUTRIENT_REMINDER_DAYS = _get_int("NUTRIENT_REMINDER_DAYS", 14)
 RESERVOIR_CHANGE_DAYS = _get_int("RESERVOIR_CHANGE_DAYS", 49)
 
+# Nutrient dosing. The reminders above know *when* to feed; these say how much,
+# so the notification can name millilitres instead of only raising an alarm.
+# Defaults are General Hydroponics Flora Series at the aggressive-vegetative
+# ratio -- 5/5/3 mL per gallon, i.e. the 25/25/15 mL per 5 gal on the bottles.
+# Retune the mix by changing these; nothing else in the code knows the ratio.
+NUTRIENT_MICRO_ML_PER_GALLON = _get_float("NUTRIENT_MICRO_ML_PER_GALLON", 5.0)
+NUTRIENT_GRO_ML_PER_GALLON = _get_float("NUTRIENT_GRO_ML_PER_GALLON", 5.0)
+NUTRIENT_BLOOM_ML_PER_GALLON = _get_float("NUTRIENT_BLOOM_ML_PER_GALLON", 3.0)
+# Every feed after the first lands on top of whatever the last one left behind,
+# so it is cut to this fraction of full strength. 1.0 disables the reduction.
+NUTRIENT_REDUCED_FRACTION = _get_float("NUTRIENT_REDUCED_FRACTION", 0.5)
+
 # ---------------------------------------------------------------------------
 # External integrations (scaffolded; see app/integrations/ and docs/integrations/)
 # ---------------------------------------------------------------------------

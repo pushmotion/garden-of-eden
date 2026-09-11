@@ -23,6 +23,21 @@ STAGES = ["germination", "thinning", "root_check", "harvest"]
 # silently skipping a whole cadence.
 RECURRING = ("nutrient", "reservoir_change")
 
+# One US teaspoon in millilitres. A dose gets mixed with a kitchen spoon at
+# least as often as with a syringe, and "13 mL" means nothing at the drawer.
+ML_PER_TEASPOON = 4.92892159375
+
+# The Flora Series parts, in the order they MUST be poured. Micro first is not a
+# preference: its calcium precipitates against Bloom's phosphate and sulfate if
+# the concentrates meet before water has diluted them, and does not redissolve.
+# ``order`` in the emitted plan is this sequence, so a consumer can render it
+# without knowing the chemistry.
+NUTRIENT_PARTS = (
+    ("micro", "FloraMicro"),
+    ("gro", "FloraGro"),
+    ("bloom", "FloraBloom"),
+)
+
 
 def _cadence(key):
     return {
@@ -132,6 +147,96 @@ def nutrient_dose(state):
     back to avoid stacking salts in a reservoir nothing on the unit can measure.
     """
     return "reduced" if (state.get("last_ack") or {}).get("nutrient") else "full"
+
+
+def _ml_per_gallon(key):
+    return {
+        "micro": config.NUTRIENT_MICRO_ML_PER_GALLON,
+        "gro": config.NUTRIENT_GRO_ML_PER_GALLON,
+        "bloom": config.NUTRIENT_BLOOM_ML_PER_GALLON,
+    }.get(key, 0.0)
+
+
+def _spoon_text(ml):
+    """``ml`` as teaspoons rounded to the nearest quarter, phrased for a spoon.
+
+    Exact teaspoons are useless at the drawer -- nobody measures 2.64 tsp -- so
+    this rounds to the nearest 1/4 tsp, which is the finest graduation a normal
+    spoon set has. The unrounded figure travels beside it in the plan for anyone
+    dosing with a syringe, so nothing is lost by rounding here.
+    """
+    quarters = int(round((ml / ML_PER_TEASPOON) * 4))
+    if quarters <= 0:
+        return "under 1/4 tsp"
+    whole, rem = divmod(quarters, 4)
+    fraction = {0: "", 1: "1/4", 2: "1/2", 3: "3/4"}[rem]
+    if whole and fraction:
+        return f"{whole} {fraction} tsp"
+    if whole:
+        return f"{whole} tsp"
+    return f"{fraction} tsp"
+
+
+def nutrient_plan(state, gallons=None):
+    """How much of each Flora Series part the next feed needs, in mL and tsp.
+
+    ``nutrient_dose`` says full or reduced; this turns that into the numbers a
+    person actually pours, which is the difference between a reminder that says
+    "add plant food" and one that can be acted on without going and looking
+    something up.
+
+    Volume comes from the caller. This module must never read the ultrasonic
+    sensor itself -- see ``water.gallons_from_state`` -- so callers pass the MQTT
+    service's last filtered figure, and an absent or nonsensical one falls back
+    to the tank's rated capacity. That fallback is the right guess in practice
+    because the documented routine is to top the reservoir up *before* dosing.
+
+    Parts come back in pouring order, which is mandatory: see NUTRIENT_PARTS.
+    """
+    strength = nutrient_dose(state)
+    fraction = 1.0 if strength == "full" else max(0.0, config.NUTRIENT_REDUCED_FRACTION)
+
+    try:
+        gallons = float(gallons)
+    except (TypeError, ValueError):
+        gallons = 0.0
+    if gallons <= 0:
+        gallons = float(config.TANK_CAPACITY_GALLONS or 0)
+
+    parts = []
+    for order, (key, label) in enumerate(NUTRIENT_PARTS, start=1):
+        ml = _ml_per_gallon(key) * gallons * fraction
+        parts.append(
+            {
+                "key": key,
+                "label": label,
+                "order": order,
+                "ml": round(ml, 1),
+                "tsp": round(ml / ML_PER_TEASPOON, 2),
+                "spoons": _spoon_text(ml),
+            }
+        )
+
+    plan = {
+        "strength": strength,
+        "fraction": round(fraction, 3),
+        "gallons": round(gallons, 1),
+        "parts": parts,
+    }
+    plan["summary"] = format_nutrient_plan(plan)
+    return plan
+
+
+def format_nutrient_plan(plan):
+    """One line for the Home Assistant sensor: what to add, in order, both units.
+
+    "then" rather than a comma because the order is load-bearing, and the string
+    is the only part of the plan a glance at a notification will ever see.
+    """
+    parts = plan.get("parts") or []
+    if not parts:
+        return "no dose"
+    return " then ".join(f"{p['label']} {p['ml']:g} mL ({p['spoons']})" for p in parts)
 
 
 def set_stage(state, stage):

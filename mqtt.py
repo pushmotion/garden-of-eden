@@ -18,7 +18,7 @@ from app.lib import grow as grow_lib
 from app.lib import state as state_lib
 from app.lib.hardware import current_duty_fraction, detect_model, get_pin_factory
 from app.lib.logging_config import configure_logging
-from app.lib.water import is_water_low, pump_cutoff, tank_readings
+from app.lib.water import gallons_from_state, is_water_low, pump_cutoff, tank_readings
 from app.sensors.camera import camera as camera_mod
 from app.sensors.distance.distance import MeasurementError
 from app.sensors.distance.routes import distance_control
@@ -936,6 +936,21 @@ def send_discovery_messages(client):
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
 
+    # The dose that goes with the alarm above. "Add Plant Food" on its own does
+    # not say which bottle or how much, so acting on it meant going and looking
+    # the numbers up -- the reminder fired and the tower still did not get fed.
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_food_dose/config",
+        {
+            "name": "Plant Food Dose",
+            "unique_id": IDENTIFIER + "_food_dose",
+            "state_topic": BASE_TOPIC + "/grow/food/dose",
+            "icon": "mdi:cup-water",
+            "entity_category": "diagnostic",
+            "device": device_info,
+        },
+    )
+
     # One acknowledge button per recurring reminder. Without these HA could
     # raise the alarm and not clear it -- you had to open the web UI to say
     # "done" -- and because the recurring reminders never edge back to OFF on
@@ -1158,6 +1173,22 @@ def send_discovery_messages(client):
         pub(f"homeassistant/{component}/gardyn/{IDENTIFIER}_{obj}/config", payload)
 
 
+def _reservoir_gallons():
+    """The last filtered reservoir figure, for sizing a nutrient dose.
+
+    Reads the value this service already recorded rather than triggering the
+    ultrasonic sensor again: publishing grow state runs on its own schedule and
+    a second reader cross-talks with the water poll, corrupting both.
+    """
+    try:
+        return gallons_from_state(
+            state_lib.load_state(), WATER_FULL_CM, WATER_EMPTY_CM, TANK_CAPACITY_GALLONS
+        )
+    except Exception:
+        logger.exception("Could not size the nutrient dose from the water reading")
+        return None
+
+
 def publish_grow_state(client):
     """Publish the whole grow surface (retained) so HA reflects real state.
 
@@ -1174,6 +1205,10 @@ def publish_grow_state(client):
         due = grow_lib.due_reminders(state)
         client.publish(BASE_TOPIC + "/grow/reminder", due[-1] if due else "none", retain=True)
         client.publish(BASE_TOPIC + "/grow/food", "ON" if "nutrient" in due else "OFF", retain=True)
+        plan = grow_lib.nutrient_plan(state, gallons=_reservoir_gallons())
+        client.publish(
+            BASE_TOPIC + "/grow/food/dose", grow_lib.format_nutrient_plan(plan), retain=True
+        )
     except Exception:
         logger.exception("Error publishing grow state")
 

@@ -86,6 +86,23 @@ def gallons_remaining(distance_cm, full_cm, empty_cm, capacity_gal):
     return round(fraction * capacity_gal, 1)
 
 
+def gallons_from_state(state, full_cm, empty_cm, capacity_gal):
+    """Reservoir gallons from the *persisted* airgap, for callers off the sensor.
+
+    The ultrasonic sensor cannot be read by two processes at once -- a second
+    reader cross-talks with the MQTT service's polling and both come back wrong
+    -- so anything outside that service works from the median-filtered value the
+    service last recorded, the same way ``bin/water.sh`` does.
+
+    Returns None when there is no reading to work from. Callers should read that
+    as "no opinion", not as "empty": guessing an empty tank would under-dose a
+    full one just as badly as the reverse.
+    """
+    if not isinstance(state, dict):
+        return None
+    return gallons_remaining(state.get("water_airgap_cm"), full_cm, empty_cm, capacity_gal)
+
+
 def tank_readings(distance_cm, full_cm, empty_cm, capacity_gal):
     """Every derived water figure, from one airgap and one calibration.
 
