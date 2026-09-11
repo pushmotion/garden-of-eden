@@ -34,6 +34,21 @@ class SurfaceSmokeTestCase(unittest.TestCase):
         self.assertEqual(self.client.get("/grow").status_code, 200)
         self.assertEqual(self.client.get("/schedule").status_code, 200)
 
+    def test_grow_carries_a_dose_even_with_nothing_due(self):
+        """The web UI reads the dose straight off this payload.
+
+        It used to render only while a reminder was due, so acknowledging a feed
+        erased the one screen that said what to pour. The plan is standing
+        information and must survive an empty ``due`` list.
+        """
+        body = self.client.get("/grow").get_json()
+        plan = body["nutrient_plan"]
+        self.assertEqual([p["key"] for p in plan["parts"]], ["micro", "gro", "bloom"])
+        for part in plan["parts"]:
+            self.assertGreater(part["ml"], 0)
+            self.assertTrue(part["spoons"], "every part needs a spoon figure")
+        self.assertIn("FloraMicro", plan["summary"])
+
     def test_bad_json_body_is_400_not_500(self):
         # Malformed/non-numeric input must be a clean 4xx, never a 500.
         r = self.client.post("/light/brightness", json={"value": "loud"})

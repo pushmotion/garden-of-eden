@@ -382,6 +382,7 @@
         <button class="ghost" onclick="startGrow()" style="margin-left:auto">Start new cycle</button>
       </div>
       <div class="row" id="grow-reminders" style="margin-top:14px"></div>
+      <div id="grow-food"></div>
     </div>
 
     <div class="card">
@@ -745,6 +746,8 @@
       try {
         const g = await get("/grow");
         nutrientDose = g.nutrient_dose || "full";
+        nutrientPlan = g.nutrient_plan || null;
+        renderFood(nutrientPlan);
         renderAlerts(g.due || []);
         $("grow-stage").value = g.stage;
         if (g.started) { const d = Math.floor((Date.now() - new Date(g.started)) / 86400000); $("grow-days").textContent = `day ${d}`; }
@@ -917,11 +920,44 @@
     // The first feed of a cycle is full strength; later ones land on top of what
     // the last one left behind, so the banner has to say which is meant.
     let nutrientDose = "full";
+    let nutrientPlan = null;
     function reminderLabel(key) {
       if (key !== "nutrient") return REMINDER_LABELS[key] || key;
+      if (nutrientPlan && (nutrientPlan.parts || []).length) {
+        return "Add plant food - " + nutrientPlan.summary;
+      }
       return nutrientDose === "reduced"
         ? "Add plant food - reduced dose (about half to two-thirds)"
         : "Add plant food - full dose (first feed of this cycle)";
+    }
+
+    // The dose is standing information, not an alert payload. It used to render
+    // only while a reminder was due, so acknowledging a feed erased the one
+    // screen that said what to pour -- and a dose you have not poured yet is
+    // exactly when you need to read it. This block is always present.
+    function renderFood(plan) {
+      const box = $("grow-food");
+      if (!box) return;
+      if (!plan || !(plan.parts || []).length) { box.innerHTML = ""; return; }
+      const rows = (plan.parts || []).map(p =>
+        `<div style="display:flex; gap:12px; align-items:baseline; padding:3px 0">
+           <span class="muted" style="width:1.2em">${p.order}</span>
+           <strong style="min-width:8em">${p.label}</strong>
+           <span style="min-width:5em">${p.ml} mL</span>
+           <span class="muted">${p.spoons}</span>
+         </div>`).join("");
+      box.innerHTML =
+        `<div style="border-top:1px solid var(--line); margin-top:14px; padding-top:12px">
+           <div class="row" style="justify-content:space-between; margin-bottom:6px">
+             <strong>Plant food &mdash; ${plan.strength} dose</strong>
+             <span class="muted">sized for ${plan.gallons} gal</span>
+           </div>
+           ${rows}
+           <div class="muted" style="margin-top:8px">
+             Top the reservoir up first, then add in this order, circulating about
+             2 minutes between each. Never premix the concentrates.
+           </div>
+         </div>`;
     }
     function renderAlerts(due) {
       const box = $("alerts"); box.innerHTML = "";
