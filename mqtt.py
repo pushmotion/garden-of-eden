@@ -946,7 +946,11 @@ def send_discovery_messages(client):
             "unique_id": IDENTIFIER + "_food_dose",
             "state_topic": BASE_TOPIC + "/grow/food/dose",
             "icon": "mdi:cup-water",
-            "entity_category": "diagnostic",
+            # Deliberately NOT entity_category "diagnostic". HA files diagnostic
+            # entities into a collapsed section of the device page and leaves
+            # them out of auto-generated dashboards, which hid this the moment
+            # it shipped -- the one entity here that exists to be read and acted
+            # on was the one you had to go hunting for.
             "device": device_info,
         },
     )
