@@ -519,6 +519,94 @@ genuinely below the cutoff. Worth re-running after any change to
 silent — a guard that refuses when it should allow looks identical to a guard
 working correctly until the plants dry out.
 
+## Cleaning mode
+
+Flushing the tower with a cleaning solution needs the pump circulating for an
+hour or two. Every ordinary path is capped at `MAX_PUMP_RUN_SECONDS` (5 min),
+and **that cap is not raised** — cleaning spends a separate budget
+(`CLEANING_MAX_SECONDS`, default 2 h) that only the deliberate cleaning path can
+reach. cron, `/pump/run`, `water.sh` and the HA pump switch all still stop after
+five minutes.
+
+Start it from **Home Assistant** (`Cleaning Mode` switch + `Cleaning Duration`
+select) or the **web UI** (Pump card → *Cleaning mode*). Also:
+
+```bash
+curl -XPOST localhost:5000/pump/clean -H 'Content-Type: application/json' -d '{"minutes":60}'
+curl -XPOST localhost:5000/pump/clean/stop
+curl localhost:5000/pump/clean            # status, remaining, cutoff, last result
+
+# bookkeeping only -- never touches the pump
+cd ~/garden-of-eden && PYTHONPATH=. venv/bin/python -m app.lib.cleaning --status
+```
+
+### Why it needs its own water cutoff
+
+`PUMP_CUTOFF_CM` (12.9 on this tower) is 4" of water, about **56% remaining**.
+Cleaning is done on a *drained* tower with a shallow pool of solution, so the
+watering cutoff would refuse a cleaning run before it ever started.
+`CLEANING_CUTOFF_CM` is the same kind of number tuned for that job:
+
+```
+CLEANING_CUTOFF_CM = WATER_EMPTY_CM - (desired_depth_inches * 2.54)
+```
+
+Unset, it falls back to `PUMP_CUTOFF_CM` — exactly today's behaviour, so a tower
+that ignores this feature is no less protected. `CLEANING_MIN_DEPTH_CM`
+(default 5 cm ≈ 2") is the hard floor underneath it: whatever cutoff is
+configured, a cleaning run always leaves that much water, so a mistyped cutoff
+cannot come to mean "run until dry".
+
+> **Verify `CLEANING_MIN_DEPTH_CM` against your own pump before trusting a long
+> run to it.** 5 cm is half the head `PUMP_CUTOFF_CM` reserves, chosen by
+> arithmetic, not measurement — and intake designs differ across Gardyn units
+> (see the calibration section above). A two-hour run has far more time to
+> strand an intake than a three-minute one.
+
+The cutoff is re-checked **for the whole run**, every `CLEANING_TICK_SECONDS`
+(15), not just at the start. A start-only check is adequate for five minutes and
+reckless for two hours.
+
+Unlike `water_guard`, this **fails closed**: a stale or missing water reading
+refuses the run. The asymmetry is deliberate — refusing a watering run kills
+plants, so that one fails open; refusing a cleaning run costs a retry by someone
+standing at the tower, while allowing one means two hours of pumping with
+nothing watching the tank.
+
+### What it suspends
+
+| Path | During a cleaning run |
+|---|---|
+| cron / `water <secs>` | skipped, exit 0 (`app.lib.cleaning_guard`) |
+| `water.sh` EXIT trap | leaves the pump alone |
+| `POST /pump/on`, `/run`, `/speed` (>0) | **409** |
+| `POST /pump/off`, `/speed 0`, `water off` | allowed — ends the run |
+| HA pump switch, physical button | ends the run |
+| MQTT 5-minute safety cap | not armed over the run |
+
+The schedule is suspended at the point of execution rather than by rewriting
+crontab. Rewriting it would mean a crash mid-clean could leave the recurring
+schedule wiped — and a silently emptied watering schedule is a much worse
+failure than a cleaning run somebody has to restart.
+
+### How it cannot outlive its deadline
+
+The deadline is persisted to `~/.garden_state.json`, not held in a timer, and
+**three** independent things enforce it:
+
+1. a watchdog thread in the Flask process,
+2. the same watchdog in `mqtt.service`,
+3. the MQTT reconcile loop, which polls regardless of whether any thread lives.
+
+A `systemctl restart` mid-clean resumes the run (`restore_actuator_state` brings
+the pump back at the cleaning duty cycle and re-arms the watchdog). An outage
+long enough to pass the deadline does not: an elapsed run reads as *no* run, and
+startup stops the pump instead of resuming it.
+
+Check what stopped a run with the `Last Cleaning Result` sensor in HA, or
+`last_result` from `GET /pump/clean`: `completed`, `stopped`,
+`stopped: low water`, or `stopped: no water reading`.
+
 ## Over-temperature alert
 
 The PCT2075 that reports PCB temperature also drives a comparator output wired

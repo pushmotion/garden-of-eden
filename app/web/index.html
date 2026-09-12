@@ -345,6 +345,24 @@
         <input type="number" id="run-secs" min="1" value="300" style="width:90px"> <span class="muted">seconds (max <span id="run-secs-max">300</span>)</span>
         <button class="btn" onclick="runPump()">Run</button>
       </div>
+
+      <!-- Cleaning mode: the one path allowed past the 5-minute cap. It runs
+           under its own budget and its own water cutoff, and it suspends
+           scheduled watering for the duration. -->
+      <div class="once" id="clean-box">
+        <div class="row">
+          <strong>Cleaning mode</strong>
+          <span class="muted">circulates cleaning solution — scheduled watering pauses</span>
+        </div>
+        <div class="row" style="margin-top:9px">
+          <label>for <input type="number" id="clean-min" min="1" value="60" style="width:64px"
+                 onchange="clampCleanMin(this)"> <span class="muted">min (max <span id="clean-min-max">120</span>)</span></label>
+          <button class="btn" id="clean-start" onclick="startClean()">Start cleaning</button>
+          <button class="ghost" id="clean-stop" onclick="stopClean()" hidden>Stop</button>
+          <span class="statuschip" id="clean-status">—</span>
+        </div>
+        <div class="row"><span class="muted" id="clean-note"></span></div>
+      </div>
     </div>
 
     <div class="card">
@@ -813,6 +831,71 @@
       } catch { el.textContent = "n/a"; el.className = "v"; }
     }
 
+    // ---- Cleaning mode ----------------------------------------------------
+    // The one pump path allowed past the 5-minute cap, under its own budget and
+    // its own water cutoff. The cap shown here comes from the API rather than
+    // being hardcoded, so this page can never offer a run the tower refuses.
+    let cleanMaxMinutes = 120;
+    let cleanActive = false;
+
+    function clampCleanMin(input) {
+      let v = Math.round(+input.value || 0);
+      v = Math.min(cleanMaxMinutes, Math.max(1, v));
+      input.value = v;
+      return v;
+    }
+
+    function fmtLeft(secs) {
+      const s = Math.max(0, Math.round(+secs || 0));
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+      if (h) return `${h}h ${String(m).padStart(2, "0")}m left`;
+      if (m) return `${m}m ${String(s % 60).padStart(2, "0")}s left`;
+      return `${s}s left`;
+    }
+
+    function renderClean(d) {
+      if (!d) return;
+      cleanActive = !!d.active;
+      if (d.max_seconds) {
+        cleanMaxMinutes = Math.max(1, Math.floor(d.max_seconds / 60));
+        $("clean-min-max").textContent = cleanMaxMinutes;
+        $("clean-min").max = cleanMaxMinutes;
+      }
+      $("clean-status").textContent = cleanActive ? fmtLeft(d.remaining_seconds) : "idle";
+      $("clean-start").hidden = cleanActive;
+      $("clean-stop").hidden = !cleanActive;
+      $("clean-min").disabled = cleanActive;
+      // While cleaning owns the pump the ordinary controls would be refused by
+      // the API anyway; greying them out says so before the click rather than
+      // after it.
+      ["pump-on", "speed", "run-secs"].forEach(id => { if ($(id)) $(id).disabled = cleanActive; });
+
+      const cutoff = d.cutoff_cm;
+      const note = [];
+      if (cleanActive) note.push("scheduled watering is paused");
+      else if (d.last_result) note.push("last run: " + d.last_result);
+      if (cutoff != null) note.push(`stops below ${fmtDist(cutoff)} ${distLabel()} airgap`);
+      $("clean-note").textContent = note.join(" · ");
+    }
+
+    async function loadClean() {
+      try { renderClean(await get("/pump/clean")); } catch {}
+    }
+
+    async function startClean() {
+      const minutes = clampCleanMin($("clean-min"));
+      const d = await post("/pump/clean", { minutes });
+      if (d && d.cleaning) renderClean(d.cleaning);
+      else loadClean();
+    }
+
+    async function stopClean() {
+      const d = await post("/pump/clean/stop");
+      if (d && d.cleaning) renderClean(d.cleaning);
+      else loadClean();
+      syncToggles();
+    }
+
     // ---- One-time pump runs (their own cron marker; never touch the schedule) ----
     async function loadOnce() {
       const box = $("once-pending"); box.innerHTML = "";
@@ -1153,11 +1236,14 @@
     $("set-caminterval").value = camInterval;
     $("set-units").value = units; applyUnitLabels();
     loadSystem(); refresh(); loadGrow(); loadSchedule(); loadPods(); loadCams(); loadTimelapses(); syncToggles(); ping();
-    loadNext(); loadOnce(); loadCronState();
+    loadNext(); loadOnce(); loadCronState(); loadClean();
     setInterval(refresh, 30000);
     // "in 12 min" goes stale on its own even when nothing changes, and a one-off
     // disappears once it fires, so re-read both on a slow timer.
     setInterval(() => { loadNext(); loadOnce(); }, 60000);
+    // Faster than the others: this one is a live countdown, and it is also how
+    // the page finds out a run ended early because the tank dropped.
+    setInterval(loadClean, 15000);
     setInterval(ping, 10000);
   </script>
 </body>

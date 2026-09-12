@@ -112,6 +112,50 @@ DEFAULT_PUMP_SPEED = _get_int("DEFAULT_PUMP_SPEED", 100)
 MAX_PUMP_RUN_SECONDS = _get_int("MAX_PUMP_RUN_SECONDS", 300)
 
 # ---------------------------------------------------------------------------
+# Cleaning mode
+# ---------------------------------------------------------------------------
+# A cleaning run circulates cleaning solution through the tower for an hour or
+# two, which is an order of magnitude past MAX_PUMP_RUN_SECONDS. That cap is
+# deliberately *not* raised to accommodate it: it exists so a stuck schedule, a
+# dropped API call or a killed CLI can never leave the pump running, and each of
+# those paths still gets five minutes. Cleaning gets a separate budget that only
+# the deliberate cleaning path can spend.
+CLEANING_MAX_SECONDS = _get_int("CLEANING_MAX_SECONDS", 7200)  # 2 hours
+CLEANING_DEFAULT_SECONDS = _get_int("CLEANING_DEFAULT_SECONDS", 3600)  # 1 hour
+
+# Duty cycle for a cleaning run. Cleaning wants flow through the whole tower
+# rather than the gentle circulation a feeding run needs, so it defaults to full
+# rather than to DEFAULT_PUMP_SPEED.
+CLEANING_PUMP_SPEED = _get_int("CLEANING_PUMP_SPEED", 100)
+
+# The airgap (cm) at which a *cleaning* run is refused or stopped, kept separate
+# from PUMP_CUTOFF_CM because the two runs are not the same job. Normal watering
+# protects a full tower of plants and can afford to stop early, at 4" of water.
+# Cleaning is done on a drained tower with a shallow pool of solution, and a
+# cutoff tuned for feeding would refuse to start at all.
+#
+# Unset falls back to PUMP_CUTOFF_CM -- exactly the watering behaviour -- so a
+# tower that never configures this is no less protected than it is today.
+CLEANING_CUTOFF_CM = _get_float("CLEANING_CUTOFF_CM", 0) or None
+
+# The floor under CLEANING_CUTOFF_CM: the water depth (cm) a cleaning run must
+# leave above the tank floor no matter how large a cutoff airgap is configured.
+# Without it a fat-fingered CLEANING_CUTOFF_CM at or past WATER_EMPTY_CM would
+# mean "run until the tank is dry" -- the one outcome the cutoff exists to
+# prevent, and a two-hour run has ample time to reach it.
+#
+# 5 cm (~2") is half the 4" head PUMP_CUTOFF_CM reserves for watering. It is a
+# starting point, not a measurement: intake designs differ across Gardyn units,
+# so verify it against your own pump before trusting a long run to it.
+CLEANING_MIN_DEPTH_CM = _get_float("CLEANING_MIN_DEPTH_CM", 5.0)
+
+# How often (seconds) a cleaning run re-checks its deadline and the tank. This
+# is a state-file read, not a sensor read -- the MQTT service still owns the
+# only ultrasonic polling -- so it is cheap enough to run often, and running it
+# often is what keeps the pump's actual stop close to its deadline.
+CLEANING_TICK_SECONDS = _get_int("CLEANING_TICK_SECONDS", 15)
+
+# ---------------------------------------------------------------------------
 # I2C device addresses
 # ---------------------------------------------------------------------------
 PCB_TEMP_ADDRESS = _get_int("PCB_TEMP_ADDRESS", 0x48)

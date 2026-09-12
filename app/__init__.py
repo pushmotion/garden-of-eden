@@ -64,6 +64,17 @@ def create_app(config_name=None):
     def health():
         return jsonify(status="ok"), 200
 
+    # Re-arm a cleaning run that outlived the process that started it. Here
+    # rather than in run.py because garden-of-eden-app ships its own run.py
+    # around this same factory, and a two-hour pump run must not depend on which
+    # wrapper started the API. A no-op (and thread-free) when nothing is running.
+    try:
+        from app.sensors.pump.routes import resume_cleaning_if_active
+
+        resume_cleaning_if_active()
+    except Exception:
+        logger.exception("Could not resume a cleaning run at startup")
+
     return app
 
 

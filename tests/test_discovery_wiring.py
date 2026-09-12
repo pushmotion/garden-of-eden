@@ -99,6 +99,7 @@ class DiscoveryWiringTestCase(unittest.TestCase):
         m.publish_schedule_state(client)
         m.publish_one_time_state(client)
         m.publish_next_pump_run(client)
+        m.publish_cleaning_state(client)
         m.publish_light_state(client)
         m.publish_pump_state(client)
         m.publish_over_temp_state(client)

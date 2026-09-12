@@ -92,8 +92,26 @@ water_for_time() {
     # turn_off_water # turn off will be caught by the exit trap.
 }
 
+# True when a cleaning run currently owns the pump.
+#
+# Errors report "not cleaning" (see app/lib/cleaning_guard.py): a wrong answer
+# in that direction costs a cleaning cycle somebody can restart, where the other
+# direction silently suppresses watering for as long as the bad state lasts.
+cleaning_in_progress() {
+    "${GOE_PATH}/venv/bin/python" -m app.lib.cleaning_guard >/dev/null 2>&1
+}
+
 # Function to handle exit signals, ensuring the water pump is turned off
+#
+# ...unless a cleaning run owns the pump. This trap fires on *every* exit, so
+# without the check a three-minute cron watering that happened to start during a
+# two-hour clean would end the clean at its own three-minute mark -- and would
+# do it silently, from the trap, long after the run appeared to succeed.
 clean_up() {
+    if cleaning_in_progress; then
+        echo "Cleaning run in progress; leaving the pump alone."
+        return 0
+    fi
     turn_off_water
 }
 
@@ -134,8 +152,27 @@ main() {
 
     local time
 
+    # Scheduled watering is suspended for the duration of a cleaning run. The
+    # pump is already circulating, at the cleaning duty cycle, under the
+    # cleaning cutoff -- a watering run has nothing to add and everything to
+    # interrupt. Exits 0 so cron records a no-op rather than a failure.
+    #
+    # "off" is exempt below: stopping the pump is safe from any source, always.
+    if [[ "$1" != "off" ]] && cleaning_in_progress; then
+        echo "Cleaning run in progress; skipping this watering run."
+        exit 0
+    fi
+
     case "$1" in
         off)
+            # "off" ends a cleaning run rather than colliding with one. Clearing
+            # the session first means the EXIT trap below sees no cleaning run
+            # and lets the pump-off through; leaving it set would strand an
+            # active session with a stopped pump, blocking every other path
+            # until its deadline passed.
+            if cleaning_in_progress; then
+                "${GOE_PATH}/venv/bin/python" -m app.lib.cleaning --stop || true
+            fi
             turn_off_water
             exit 0
             ;;
