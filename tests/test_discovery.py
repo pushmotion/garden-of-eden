@@ -70,10 +70,10 @@ class DiscoveryTestCase(unittest.TestCase):
             self.assertIn("device", data, f"{topic} missing device block")
             self.assertIn("identifiers", data["device"])
 
-    def test_every_entity_pins_its_object_id(self):
+    def test_every_entity_pins_its_default_entity_id(self):
         """Entity ids must be deterministic, not derived from the display name.
 
-        Without object_id, HA builds the entity_id from the name under rules
+        Without default_entity_id, HA builds the entity_id from the name under rules
         that vary by release and by whether the device name collides with
         another device -- which produced a mix of `sensor.gardyn_temperature`
         and `sensor.gardyn_1_gardyn_water_depth` on one tower. Pinning it to
@@ -84,23 +84,23 @@ class DiscoveryTestCase(unittest.TestCase):
         self.mqtt.send_discovery_messages(client)
         for topic, payload in client.published:
             data = json.loads(payload)
-            self.assertIn("object_id", data, f"{topic} does not pin an object_id")
+            self.assertIn("default_entity_id", data, f"{topic} does not pin an default_entity_id")
             self.assertEqual(
-                data["object_id"],
-                data["unique_id"],
-                f"{topic} object_id must track unique_id",
+                data["default_entity_id"],
+                topic.split("/")[1] + "." + data["unique_id"],
+                f"{topic} default_entity_id must track unique_id",
             )
             self.assertTrue(
-                data["object_id"].startswith(self.mqtt.IDENTIFIER + "_"),
-                f"{topic} object_id must be namespaced by MQTT_IDENTIFIER",
+                data["default_entity_id"].split(".", 1)[1].startswith(self.mqtt.IDENTIFIER + "_"),
+                f"{topic} default_entity_id must be namespaced by MQTT_IDENTIFIER",
             )
 
-    def test_object_ids_are_unique(self):
-        """Two entities sharing an object_id would collide into `_2` suffixes."""
+    def test_default_entity_ids_are_unique(self):
+        """Two entities sharing an default_entity_id would collide into `_2` suffixes."""
         client = FakeClient()
         self.mqtt.send_discovery_messages(client)
-        ids = [json.loads(p)["object_id"] for _, p in client.published]
-        self.assertEqual(len(ids), len(set(ids)), "duplicate object_id in discovery")
+        ids = [json.loads(p)["default_entity_id"] for _, p in client.published]
+        self.assertEqual(len(ids), len(set(ids)), "duplicate default_entity_id in discovery")
 
     def test_button_event_types(self):
         client = FakeClient()

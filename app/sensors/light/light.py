@@ -7,7 +7,8 @@ from gpiozero import PWMLED
 from gpiozero.pins.pigpio import PiGPIOFactory
 
 import config
-from app.lib import hardware
+from app.lib import cleaning, hardware, state
+from app.lib.locking import file_lock, pump_locked
 
 
 class GPIOController:
@@ -116,27 +117,49 @@ class Light:
         self.led.close()
 
 
-def ramp_to(light, target, minutes):
+@pump_locked
+def scheduled_brightness(light, target, generation):
+    """Check ownership and write PWM atomically with cleaning transitions."""
+    saved = state.load_state()
+    if cleaning.is_active(saved) or saved.get(cleaning.GENERATION_KEY) != generation:
+        return False
+    light.set_brightness(target)
+    return True
+
+
+def ramp_to(light, target, minutes, scheduled=False):
     """Gradually move brightness from its current level to ``target`` over
     ``minutes`` (sunrise/sunset). ``target`` of 0 ends with the light off."""
     target = max(0, min(100, int(target)))
+    generation = state.load_state().get(cleaning.GENERATION_KEY) if scheduled else None
+
+    def apply(value):
+        if scheduled:
+            return scheduled_brightness(light, value, generation)
+        light.set_brightness(value)
+        return True
+
     start = light.get_brightness()
     total = max(0, int(minutes)) * 60
     if total <= 0:
-        light.set_brightness(target)
+        apply(target)
         return
     steps = max(1, min(int(total), 60))  # at most ~1 update/sec, capped at 60
     delay = total / steps
     for i in range(1, steps + 1):
         value = start + (target - start) * i / steps
-        light.set_brightness(int(round(value)))
+        if not apply(int(round(value))):
+            return
         if i < steps:
             time.sleep(delay)
-    light.set_brightness(target)
+    apply(target)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Control an IoT light.")
+    parser.add_argument(
+        "--scheduled", action="store_true", help="Skip while cleaning owns the schedule."
+    )
     parser.add_argument("--on", action="store_true", help="Turn the light on.")
     parser.add_argument("--off", action="store_true", help="Turn the light off.")
     parser.add_argument(
@@ -151,9 +174,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    light = Light()  # pins/frequency from config
+    with file_lock(config.STATE_FILE + ".pump.lock"):
+        if args.scheduled and cleaning.is_active():
+            raise SystemExit(0)
+        light = Light()  # pins/frequency from config
 
-    if args.ramp_minutes and args.brightness is not None:
+    if args.scheduled:
+        target = 0 if args.off else args.brightness if args.brightness is not None else 100
+        ramp_to(light, target, args.ramp_minutes, scheduled=True)
+    elif args.ramp_minutes and args.brightness is not None:
         ramp_to(light, args.brightness, args.ramp_minutes)
     elif args.on:
         light.on()

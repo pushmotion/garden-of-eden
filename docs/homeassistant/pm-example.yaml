@@ -2,7 +2,7 @@
 #
 # One of two examples in this folder:
 #   pm-example.yaml        -- this file: grouped sections, status-first, and the
-#                             only one covering all 41 discovered entities
+#                             only one covering all 47 discovered entities
 #   lovelace-example.yaml  -- plain single-column card list (upstream style),
 #                             a 25-entity SUBSET; see its header for what it omits
 #
@@ -14,25 +14,11 @@
 # PORTING THIS TO ANOTHER TOWER: find/replace "gardyn_01" with that unit's
 # MQTT_IDENTIFIER. Nothing else changes.
 #
-# Every discovery payload pins object_id to its unique_id, so entity ids are
-# always <domain>.<MQTT_IDENTIFIER>_<suffix> -- identical in shape on every
-# tower, and immune to renaming an entity in the HA UI. The suffix is the
-# unique_id, which is not always the slug of the display name:
-#
-#   Water Remaining  -> sensor.<id>_water_percent
-#   PCB Temperature  -> sensor.<id>_pcb_temp
-#   Add Plant Food   -> binary_sensor.<id>_food
-#   Last Refresh     -> sensor.<id>_refresh_last
-#   Last Log         -> sensor.<id>_log
-#   Lights Schedule  -> switch.<id>_sched_lights
-#
-# That is deliberate: the display name is cosmetic, the unique_id is the
-# contract, and an entity must not move because someone retitled it.
-#
-# NOTE: object_id only takes effect when an entity is FIRST created. A tower
-# that was discovered before this change keeps its old ids until its device is
-# deleted in HA and re-discovered -- see "Home Assistant dashboard" in
-# docs/DEPLOYMENT.md.
+# MQTT discovery suggests default_entity_id = <domain>.<unique_id>.
+# Existing registry IDs are preserved. Check the actual IDs before importing;
+# bin/ha-align-entity-ids.py provides a dry-run report for older registrations.
+# Explicitly renamed entity IDs require corresponding dashboard changes.
+# Do not delete devices to align IDs.
 #
 # Sections require HA 2024.3+. Drag section headers to reorder, drag cards
 # between sections, and resize cards from the edit view.
@@ -70,6 +56,24 @@ views:
             heading: Tower Status
             heading_style: title
             icon: mdi:sprout-outline
+
+          - type: entities
+            title: Cleaning
+            show_header_toggle: false
+            entities:
+              - entity: switch.gardyn_01_pump_clean
+                name: Cleaning mode
+              - entity: select.gardyn_01_pump_clean_minutes
+                name: Cleaning duration
+              - entity: sensor.gardyn_01_pump_clean_remaining
+                name: Time remaining
+              - entity: sensor.gardyn_01_pump_clean_result
+                name: Last cleaning result
+              - entity: sensor.gardyn_01_pump_clean_cutoff
+                name: Cleaning water cutoff
+          - type: tile
+            entity: sensor.gardyn_01_food_dose
+            name: Plant Food Dose
 
           # ---- Water -----------------------------------------------------
           - type: heading

@@ -79,7 +79,9 @@ check_water_level() {
 
 # Turn on water pump
 turn_on_water() {
-    "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/pump/pump.py" --on --speed "${SPEED}"
+    local extra=()
+    if [[ "$OVERRIDE_LOW_WATER" == true ]]; then extra+=(--override-low-water-level); fi
+    "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/pump/pump.py" --on --speed "${SPEED}" "${extra[@]}"
 }
 
 # Function to water for a specified time, then turn off
@@ -170,10 +172,7 @@ main() {
             # and lets the pump-off through; leaving it set would strand an
             # active session with a stopped pump, blocking every other path
             # until its deadline passed.
-            if cleaning_in_progress; then
-                "${GOE_PATH}/venv/bin/python" -m app.lib.cleaning --stop || true
-            fi
-            turn_off_water
+            "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/pump/pump.py" --off --stop-cleaning
             exit 0
             ;;
         on)

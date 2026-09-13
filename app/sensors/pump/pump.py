@@ -117,6 +117,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Control a pump.")
     parser.add_argument("--on", action="store_true", help="Turn the pump on.")
     parser.add_argument("--off", action="store_true", help="Turn the pump off.")
+    parser.add_argument(
+        "--stop-cleaning", action="store_true", help="Also end cleaning ownership on OFF."
+    )
+    parser.add_argument(
+        "--override-low-water-level",
+        action="store_true",
+        help="Explicitly bypass the ordinary water guard.",
+    )
     parser.add_argument("--speed", type=int, default=None, help="Set the pump speed (0-100).")
     parser.add_argument(
         "--factory-host", type=str, default=None, help="GPIO factory host for remote access."
@@ -131,16 +139,36 @@ if __name__ == "__main__":
     if args.factory_host and args.factory_port:
         pin_factory = PiGPIOFactory(host=args.factory_host, port=args.factory_port)
 
-    pump = Pump(pin_factory=pin_factory)  # pins/frequency from config
+    from app.lib import cleaning as cleaning_lib
+    from app.lib.locking import file_lock
+    from app.lib.water_guard import pump_allowed
 
-    if args.on:
-        pump.on()
-        if args.speed is not None:
-            pump.set_speed(args.speed)
-    elif args.off:
-        pump.off()
-    elif args.speed is not None:
-        pump.on()
-        pump.set_speed(args.speed)
-    else:
-        print("No action specified. Use --on, --off, or --speed.")
+    with file_lock(config.STATE_FILE + ".pump.lock"):
+        pump = Pump(pin_factory=pin_factory)  # pins/frequency from config
+        if args.off:
+            if args.stop_cleaning:
+                from app.lib import state
+                from app.lib.light_schedule import restore
+
+                was_cleaning = bool(state.load_state().get(cleaning_lib.UNTIL_KEY))
+                try:
+                    pump.off()
+                    state.save_state(pump_on=False)
+                finally:
+                    cleaning_lib.clear()
+                    if was_cleaning:
+                        restore()
+            elif not cleaning_lib.is_active():
+                pump.off()
+        elif args.on or args.speed is not None:
+            if cleaning_lib.is_active():
+                print("Cleaning owns the pump; ordinary command skipped")
+            elif not args.override_low_water_level and not pump_allowed()[0]:
+                raise SystemExit("Pump refused: water below cutoff")
+            else:
+                if args.speed is not None:
+                    pump.set_speed(args.speed)
+                else:
+                    pump.on()
+        else:
+            print("No action specified. Use --on, --off, or --speed.")

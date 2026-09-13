@@ -62,7 +62,9 @@ def create_app(config_name=None):
 
     @app.route("/health")
     def health():
-        return jsonify(status="ok"), 200
+        from app.lib.runtime import inventory
+
+        return jsonify(status="ok", scope="http_process", **inventory()), 200
 
     # Re-arm a cleaning run that outlived the process that started it. Here
     # rather than in run.py because garden-of-eden-app ships its own run.py

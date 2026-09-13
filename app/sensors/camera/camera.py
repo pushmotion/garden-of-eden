@@ -13,6 +13,7 @@ import subprocess
 import threading
 
 import config
+from app.lib.locking import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ def capture(device, output_path, resolution=None):
         "2",  # then average two, which is what the MQTT path has always done
         output_path,
     ]
-    with _capture_lock:
+    with _capture_lock, file_lock(config.STATE_FILE + ".camera.lock"):
         logger.info("Capturing image from %s -> %s", device, output_path)
         subprocess.run(cmd, capture_output=True, check=True)
     return output_path

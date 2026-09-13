@@ -124,10 +124,13 @@ class DistanceBlueprintTestCase(BaseTestCase):
         self.app.config["TESTING"] = True
         self.client = self.app.test_client()
 
-    @patch("app.sensors.distance.routes.distance_control.measure_once")
+    @patch("app.sensors.distance.routes.state_lib.load_state")
     def test_get_distance(self, mock_measure_once):
         # Mocking the return value of measure_once method to simulate a distance value of 55.5
-        mock_measure_once.return_value = 55.5
+        from datetime import datetime
+
+        stamp = datetime.now().isoformat()
+        mock_measure_once.return_value = {"water_airgap_cm": 55.5, "water_checked_at": stamp}
 
         # Making a GET request to the /measure endpoint
         response = self.client.get(f"{self.BASE_ROUTE}/measure")
@@ -140,7 +143,14 @@ class DistanceBlueprintTestCase(BaseTestCase):
         # 55.5cm is well past empty, so everything derived bottoms out.
         self.assertEqual(
             response.get_json(),
-            {"distance": 55.5, "depth": 0.0, "percent": 0.0, "gallons": 0.0},
+            {
+                "distance": 55.5,
+                "depth": 0.0,
+                "percent": 0.0,
+                "gallons": 0.0,
+                "checked_at": stamp,
+                "fresh": True,
+            },
         )
 
 
