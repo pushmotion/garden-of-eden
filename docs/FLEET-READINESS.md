@@ -38,6 +38,20 @@ Starting cleaning must persist its deadline before energizing the pump. A restar
 may resume only a still-valid session with fresh water data. Old timers and
 watchdogs cannot stop or restart a replacement session.
 
+An ultrasonic distance reading is not a reservoir-presence interlock. A displaced
+sensor can return a plausible, even stable, distance from another object. Freshness
+and threshold checks do not establish that water covers the pump intake.
+Before a supervised cleaning test, physically confirm the reservoir is assembled,
+the sensor is seated and aimed correctly, and enough solution covers the intake.
+After moving the sensor, remeasure that tower's calibration.
+
+For an unexpected pump start, preserve the incident logs, saved cleaning session,
+water-reading timestamp/value and effective configuration before changing them.
+Inspect the guard verdict without sending a pump-start command. Losing network
+contact does not establish that the pump lost power. Before restoring power to a
+partly assembled tower, account for saved sessions and automatic startup behavior.
+Do not classify the incident as fixed until the input and decision are understood.
+
 The saved cron entries must be refreshed when deploying this version so lighting
 commands carry `--scheduled`. The new updater does this automatically. For a
 controlled initial deployment, run from the repository after activating the code:
