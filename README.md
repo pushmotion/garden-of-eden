@@ -187,13 +187,13 @@ a worse failure than the dry run being guarded against.
 
 ### 4. Home Assistant: deterministic entities, multi-tower safe
 
-- **Every discovery payload pins `object_id`** to its `unique_id`, so entity ids
-  are always `<domain>.<MQTT_IDENTIFIER>_<suffix>`. Left to itself HA derives the
+- **Every discovery payload suggests `default_entity_id`** as its domain plus
+  `unique_id`, so new entity ids default to `<domain>.<MQTT_IDENTIFIER>_<suffix>`. Left to itself HA derives the
   id from the *display name*, under rules that vary by release and by whether the
   device name collides with another — which left one tower straddling two schemes
   (`sensor.gardyn_temperature` alongside `sensor.gardyn_1_gardyn_water_depth`).
-  Pinning also means renaming an entity in the UI can never move it out from
-  under a dashboard.
+  Existing registry IDs and explicit entity-ID renames take precedence; dashboard
+  references must match the actual registry IDs.
 - **`MQTT_BASETOPIC` defaults to `MQTT_IDENTIFIER`**, so each tower gets its own
   topic namespace. This is not cosmetic: `mqtt.py` subscribes to
   `BASE_TOPIC + "/#"`, so two units sharing a base topic receive each other's
@@ -206,7 +206,7 @@ a worse failure than the dry run being guarded against.
   the light and pump duty cycle without changing either; `Refresh Status` reads
   `OK` or `PARTIAL: <what failed>`.
 - **[`bin/ha-align-entity-ids.py`](bin/ha-align-entity-ids.py)** renames existing
-  registry entries onto the pinned scheme. `object_id` only applies when HA first
+  registry entries onto the pinned scheme. `default_entity_id` only applies when HA first
   creates an entry — it matches on `unique_id` and reuses the old entity_id
   forever — so a tower discovered before this change needs a rename. Renaming
   beats deleting the device: the registry entry survives, so recorder history and
@@ -214,7 +214,7 @@ a worse failure than the dry run being guarded against.
   this cannot be done with `curl`. Dry run by default.
 - **Dashboards:** [`pm-example.yaml`](docs/homeassistant/pm-example.yaml) is a
   Sections layout grouped by function (status first, then lighting, pump,
-  one-time runs, environment, cameras, diagnostics) and covers all 37 discovered
+  one-time runs, environment, cameras, diagnostics) and covers all 47 discovered
   entities. [`lovelace-example.yaml`](docs/homeassistant/lovelace-example.yaml)
   is a plain card list and a **25-entity subset** — no one-time pump runs, no
   derived water readings, no refresh controls. Its header lists the omissions.
@@ -357,7 +357,7 @@ See [`docs/simulator.md`](docs/simulator.md).
     - [Recommendations](#recommendations)
       - [Upgrading the Pi Zero 2](#upgrading-the-pi-zero-2)
   - [Design Decisions](#design-decisions)
-    - [Python Version 3.6 \>=](#python-version-36-)
+    - [Python Version 3.9 or newer](#python-version-39-or-newer)
     - [Delays in Reading Temp/Humidity data](#delays-in-reading-temphumidity-data)
     - [GPIO](#gpio)
   - [Folder Structure](#folder-structure)
@@ -370,11 +370,12 @@ Start with a clean install of Linux. Use the [RaspberryPi Imager](https://www.ra
 
 ```bash
 # clone repo
-git clone git@github.com:iot-root/garden-of-eden.git
+git clone --branch feat/gardyn-tower-local https://github.com/pushmotion/garden-of-eden.git
 cd garden-of-eden 
 ```
 
-Update the `.env` with mqtt broker info
+Update `.env` with broker credentials and a unique lowercase `MQTT_IDENTIFIER`
+for this tower. Leave `MQTT_BASETOPIC` unset to use that identity.
 
 ```
 cp .env-dist .env
@@ -384,7 +385,7 @@ nano .env
 Install dependencies, and run services pigpiod, mqtt.service
 
 ```
-./bin/setup.sh`
+GARDEN_HOSTNAME=<unique-hostname> ./bin/setup.sh
 ```
 
 Ensure the pigpiod daemon is running
@@ -412,10 +413,11 @@ sudo systemctl status mqtt.service
 ### MQTT with HomeAssistant
 
 Every entity is created automatically by MQTT discovery — nothing is added by
-hand. 37 entities appear under one device.
+hand. 47 entities appear under one device.
 
-**Entity ids are deterministic:** `<domain>.<MQTT_IDENTIFIER>_<suffix>`, because
-each discovery payload pins `object_id` to its `unique_id`. With
+**Suggested initial entity ids:** `<domain>.<MQTT_IDENTIFIER>_<suffix>`, because
+each discovery payload sets `default_entity_id` to its domain plus `unique_id`.
+Existing entity registry IDs are preserved. With
 `MQTT_IDENTIFIER=gardyn_01` you get `sensor.gardyn_01_water_depth`, and a
 dashboard ports to another tower by find/replacing the identifier.
 
@@ -432,7 +434,7 @@ contract:
 | Last Log | `sensor.<id>_log` |
 | Lights Schedule | `switch.<id>_sched_lights` |
 
-Generate the definitive list for any identifier:
+Generate the definitive list on a development machine only (never run test stubs on a Pi):
 
 ```bash
 python - <<'PY'
@@ -442,7 +444,7 @@ class C:
     def publish(self, topic, payload=None, **kw): self.pub.append((topic, payload))
 c = C(); mqtt.send_discovery_messages(c)
 for t, p in sorted(c.pub):
-    d = json.loads(p); print(f'{t.split("/")[1]}.{d["object_id"]:40} {d["name"]}')
+    d = json.loads(p); print(f'{d["default_entity_id"]:55} {d["name"]}')
 PY
 ```
 
@@ -508,7 +510,8 @@ Check the configuration works:
 `sudo journalctl -xeu mosquitto.service`
 
 
-If you havent already, run `./bin/setup.sh`, this will install all OS dependencies, install the python libs, and run services pigpiod, mqtt.service
+If you have not already, run `GARDEN_HOSTNAME=<unique-hostname> ./bin/setup.sh` after
+configuring `.env`. This installs dependencies and starts the tower services.
 
 Ensure the pigpiod, mqtt, and broker daemon is running
 
@@ -787,9 +790,10 @@ For better performance, the Pi Zero can be replaced with a Pi Zero 2. This will 
 
 ## Design Decisions
 
-### Python Version 3.6 >=
+### Python Version 3.9 or newer
 
-Minimum python version of 3.6 to support `printf()`
+The current build requires Python 3.9 or newer. Use the pinned dependencies and
+run the off-Pi checks before changing the runtime on a tower.
 
 ### Delays in Reading Temp/Humidity data
 
@@ -846,3 +850,9 @@ guard returns a clean 400/503 instead of crashing.
 per-driver CLIs all import the *same* classes from `app/sensors/*`. Behaviour
 changes — how the pump ramps, how the water guard works — belong in the driver,
 not in any single entry point.
+
+### Three-tower rollout
+
+See [fleet readiness](docs/FLEET-READINESS.md) for dashboard generation,
+identity checks, cleaning behavior and staged deployment. MQTT discovery creates
+entities and devices; it does not deploy these custom dashboard views.

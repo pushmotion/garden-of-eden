@@ -2,7 +2,7 @@
 #
 # A plain single-column card list, kept as the simplest possible starting point.
 #
-# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 24 of the 41 entities
+# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows a subset of the 47 entities
 # mqtt.py discovers. If you want the whole device, use pm-example.yaml in this
 # folder; it is the dashboard these towers actually run.
 #
@@ -18,18 +18,11 @@
 # controls and the diagnostic log -- so a tower driven from this dashboard alone
 # cannot water on demand and shows the raw airgap rather than depth or gallons.
 #
-# All entities are created automatically via MQTT discovery by mqtt.py, which
-# pins each object_id to its unique_id. Entity ids are therefore always
-# <domain>.<MQTT_IDENTIFIER>_<suffix> -- the ids below assume the default
-# "gardyn_01", so porting to another tower is a find/replace of that.
-#
-# The suffix is the unique_id, not always the display-name slug: "Water
-# Remaining" is sensor.gardyn_01_water_percent, "PCB Temperature" is
-# sensor.gardyn_01_pcb_temp. See pm-example.yaml for the full list.
-#
-# object_id only applies when an entity is FIRST created, so a tower discovered
-# before that change keeps its old ids until its HA device is deleted and
-# re-discovered — see docs/DEPLOYMENT.md.
+# MQTT discovery suggests default_entity_id = <domain>.<unique_id>.
+# Existing registry IDs are preserved. Check the actual IDs before importing;
+# bin/ha-align-entity-ids.py provides a dry-run report for older registrations.
+# Explicitly renamed entity IDs require corresponding dashboard changes.
+# Do not delete devices to align IDs.
 #
 # Paste into a dashboard via: Settings → Dashboards → (⋮) → Edit → Raw config.
 

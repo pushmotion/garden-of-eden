@@ -338,22 +338,23 @@ That editor *replaces* the whole dashboard, so if the target dashboard already
 holds cards for anything else, paste the `views:` entry into your existing config
 instead of overwriting the file wholesale.
 
-### Entity ids are pinned, not derived
+### Suggested initial entity IDs
 
-Every discovery payload sets `object_id` to its `unique_id`, so entity ids are
-always `<domain>.<MQTT_IDENTIFIER>_<suffix>` — `sensor.gardyn_01_water_depth`.
+Every discovery payload sets `default_entity_id` to its domain plus `unique_id`,
+suggesting `<domain>.<MQTT_IDENTIFIER>_<suffix>` — `sensor.gardyn_01_water_depth`.
+Existing registry IDs and explicit entity-ID renames take precedence.
 
 Left to itself, HA derives the id from the *display name* under rules that vary
 by release and by whether the device name collides with another device. This
 tower demonstrated the failure: it ended up with both `sensor.gardyn_temperature`
 and `sensor.gardyn_1_gardyn_water_depth`, depending on when each entity was first
-seen. Pinning the id removes HA's naming rules from the equation, and means
-retitling an entity in the UI can never move it out from under a dashboard.
+seen. Supplying an initial ID avoids depending on display-name generation.
+Dashboard references must still match the actual registry IDs.
 
 The suffix is the `unique_id`, which is not always the display-name slug —
 "Water Remaining" is `sensor.<id>_water_percent`, "PCB Temperature" is
 `sensor.<id>_pcb_temp`, "Add Plant Food" is `binary_sensor.<id>_food`. Generate
-the definitive list for any identifier with:
+the definitive list on a development machine only (never on a Pi) with:
 
 ```bash
 python - <<'PY'
@@ -363,26 +364,18 @@ class C:
     def publish(self, topic, payload=None, **kw): self.pub.append((topic, payload))
 c = C(); mqtt.send_discovery_messages(c)
 for t, p in sorted(c.pub):
-    d = json.loads(p); print(f'{t.split("/")[1]}.{d["object_id"]:40} {d["name"]}')
+    d = json.loads(p); print(f'{d["default_entity_id"]:55} {d["name"]}')
 PY
 ```
 
 ### Migrating a tower that HA already discovered
 
-`object_id` only applies when an entity is **first created**. HA matches on
+`default_entity_id` only applies when an entity is **first created**. HA matches on
 `unique_id`, which is unchanged, so an already-registered entity keeps its old
-id forever. To adopt the pinned ids on a tower HA has already seen:
-
-1. Settings → Devices & Services → **MQTT** → the Gardyn device → ⋮ → **Delete**
-2. It reappears within seconds — discovery configs are retained on the broker,
-   so HA re-creates every entity, this time honouring `object_id`
-3. Paste the dashboard
-
-What this costs: recorder history and long-term statistics stay attached to the
-old ids and are eventually purged, and any automation, script or dashboard
-referencing an old id must be repointed. Entity customisations (renames, area
-assignment, hidden/disabled flags) are lost with the registry entries. Nothing
-on the Pi is affected — the schedule, grow state and crontab live outside HA.
+ID. Review `bin/ha-align-entity-ids.py` in its default dry-run mode to identify
+mismatches. Prefer adapting dashboard references or deliberately renaming registry
+entries over deleting devices. Review affected automation and dashboard references
+before applying renames, and back up HA first.
 
 ### Running more than one tower
 
@@ -406,7 +399,7 @@ an existing single-tower deployment on its old topics.
 
 The discovery *topic* keeps its `gardyn` node_id segment
 (`homeassistant/sensor/gardyn/<object_id>/config`) on purpose. HA identifies
-entities by `unique_id` and `object_id`, both already per-tower, so the segment
+entities by their component and `unique_id`, already per-tower, so the segment
 is only a grouping label — and moving it would strand the old retained configs
 at their old topics, leaving HA showing every entity twice.
 
@@ -521,6 +514,15 @@ working correctly until the plants dry out.
 
 ## Cleaning mode
 
+Cleaning Mode is for an **empty tower with no plants**, before or between grows.
+It temporarily overrides normal watering and lighting schedules while circulating
+the operator's cleaning solution. Manual lighting remains available. The saved
+schedules are preserved; normal lighting resumes at its current scheduled setting
+when cleaning stops or expires, and watering resumes at its next scheduled run.
+Missed watering runs are not replayed. A lighting fade interrupted by cleaning
+is cancelled, even if the cleaning cycle finishes before the fade's next step.
+If lighting has no enabled schedule, its manual setting is left alone.
+
 Flushing the tower with a cleaning solution needs the pump circulating for an
 hour or two. Every ordinary path is capped at `MAX_PUMP_RUN_SECONDS` (5 min),
 and **that cap is not raised** — cleaning spends a separate budget
@@ -577,17 +579,22 @@ nothing watching the tank.
 
 | Path | During a cleaning run |
 |---|---|
+| scheduled lighting / scheduled sunrise and sunset ramps | skipped or cancelled; manual lighting remains available |
 | cron / `water <secs>` | skipped, exit 0 (`app.lib.cleaning_guard`) |
 | `water.sh` EXIT trap | leaves the pump alone |
 | `POST /pump/on`, `/run`, `/speed` (>0) | **409** |
 | `POST /pump/off`, `/speed 0`, `water off` | allowed — ends the run |
-| HA pump switch, physical button | ends the run |
+| HA pump OFF / physical pump button | ends the run; ordinary pump ON and positive speed commands are refused |
 | MQTT 5-minute safety cap | not armed over the run |
 
 The schedule is suspended at the point of execution rather than by rewriting
 crontab. Rewriting it would mean a crash mid-clean could leave the recurring
 schedule wiped — and a silently emptied watering schedule is a much worse
 failure than a cleaning run somebody has to restart.
+
+Deploying this version requires refreshing the saved cron entries once to add
+the scheduled-light flag. See [fleet readiness](FLEET-READINESS.md). Both the
+lighting and watering settings remain saved while cleaning is active.
 
 ### How it cannot outlive its deadline
 

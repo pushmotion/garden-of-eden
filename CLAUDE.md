@@ -112,7 +112,7 @@ All config flows through `config.py`, which reads `.env` (copy from `.env-dist`)
 
 - Requires the **pigpiod** daemon; drivers use `PiGPIOFactory` rather than the default gpiozero pin factory. `mqtt.service` depends on `pigpiod.service`.
 - I2C device addresses are meaningful: PCT2075 `0x48` (PCB temp), INA219 `0x40` (pump power), DHT20 `0x38`, AM2320 `0x5c`. The AM2320 needs a wakeup sequence and won't show in a plain `i2cdetect`.
-- Targets **Python 3.6+**; pinned deps in `requirements.txt` are chosen for ARM/Pi compatibility — be cautious bumping versions.
+- Targets **Python 3.9+**; pinned deps in `requirements.txt` are chosen for ARM/Pi compatibility — be cautious bumping versions.
 
 ## Commit conventions
 

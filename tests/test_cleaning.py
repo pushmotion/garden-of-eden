@@ -237,10 +237,10 @@ class CleaningWaterVerdictTestCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("blind", reason)
 
-    def test_no_cutoff_configured_disables_the_interlock(self):
+    def test_no_cutoff_configured_refuses_cleaning(self):
         ok, reason = cleaning.water_verdict(state={}, now=self.now, cutoff=None)
-        self.assertTrue(ok)
-        self.assertIn("dry-run protection is off", reason)
+        self.assertFalse(ok)
+        self.assertIn("no cleaning cutoff configured", reason)
 
 
 if __name__ == "__main__":
