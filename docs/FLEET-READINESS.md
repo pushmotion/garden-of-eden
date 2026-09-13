@@ -62,6 +62,14 @@ venv/bin/python -c 'from app.sensors.schedule import schedule; schedule.refresh(
 
 ## Deployment order
 
+For dry commissioning, set `PUMP_MAINTENANCE=true` in the tower's `.env` before
+starting the updated services. The pump driver initializes OFF and refuses every
+positive PWM command, including cleaning. `/health` reports this setting. Leave it
+enabled while the tank is empty. Removing the inhibit requires changing `.env` and
+restarting both MQTT and API services after verifying water and sensor placement.
+This software inhibit applies to this version's driver, not older processes or
+external programs writing GPIO directly.
+
 1. Validate the candidate off-Pi. Do not run the test suite on tower hardware.
 2. Use the assembled, plant-free tower for the first supervised deployment.
    Verify its unique identity, broker connectivity, hardware and water readings

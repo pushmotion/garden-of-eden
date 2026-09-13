@@ -28,6 +28,7 @@ def revision():
 def inventory():
     saved = state.load_state()
     return {
+        "pump_maintenance": config.PUMP_MAINTENANCE,
         "revision": revision(),
         "water_checked_at": saved.get("water_checked_at"),
         "water_reading_fresh": is_reading_fresh(
