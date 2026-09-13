@@ -172,6 +172,8 @@ def start_cleaning(seconds=None, speed=None):
     """
     if pump_control is None:
         raise CleaningRefused("pump unavailable")
+    if config.PUMP_MAINTENANCE:
+        raise CleaningRefused("Pump disabled for maintenance")
     if cleaning_lib.is_active():
         raise CleaningRefused("A cleaning run is already active; stop it first")
 

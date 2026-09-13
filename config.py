@@ -67,6 +67,9 @@ LOG_FILE = os.getenv("LOG_FILE", "gardyn.log")
 PIGPIO_HOST = os.getenv("PIGPIO_HOST") or None
 PIGPIO_PORT = _get_int("PIGPIO_PORT", 8888)
 
+# Explicit commissioning inhibit. Restart services after changing this setting.
+PUMP_MAINTENANCE = _get_bool("PUMP_MAINTENANCE")
+
 # ---------------------------------------------------------------------------
 # Sensor / hardware model
 # SENSOR_TYPE is the temp/humidity chip: "AM2320" (Gardyn 1.0/2.0) or

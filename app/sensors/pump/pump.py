@@ -38,7 +38,11 @@ class Pump:
         # See Light.__init__: read the live duty cycle before constructing PWMLED
         # so instantiating this driver cannot cut a scheduled pump run short.
         self.gpio = GPIOController(pin, self.pin_factory)
-        initial = hardware.current_duty_fraction(getattr(self.gpio, "pi", None), pin)
+        initial = (
+            0
+            if config.PUMP_MAINTENANCE
+            else hardware.current_duty_fraction(getattr(self.gpio, "pi", None), pin)
+        )
         self.pump = PWMLED(self.pin, pin_factory=self.pin_factory, initial_value=initial)
         self.set_frequency(frequency)
 
@@ -47,6 +51,9 @@ class Pump:
         Turn pump on. Default to 30 percent duty.
         """
         print("Turning pump on")
+        if config.PUMP_MAINTENANCE:
+            self.pump.value = 0
+            raise RuntimeError("Pump disabled for maintenance")
         self.pump.value = 1
 
     def off(self):
@@ -89,6 +96,9 @@ class Pump:
         - duty_cycle_percentage (int): A value between 0 (off) and 100 (full brightness).
         """
         if 0 <= duty_cycle_percentage <= 100:
+            if config.PUMP_MAINTENANCE and duty_cycle_percentage > 0:
+                self.pump.value = 0
+                raise RuntimeError("Pump disabled for maintenance")
             # gpiozero's PWMLED uses a 0-1 scale for duty cycle
             duty = duty_cycle_percentage / 100.0
             print(f"Setting pump duty_cycle to {duty_cycle_percentage}%")
