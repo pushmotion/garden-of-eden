@@ -52,7 +52,7 @@ def timelapse_status(cam):
     stats = camera.frame_stats(cam)
     stats["min_frames"] = config.TIMELAPSE_MIN_FRAMES
     stats["ready"] = stats["frames"] >= config.TIMELAPSE_MIN_FRAMES
-    stats["has_video"] = os.path.exists(camera.timelapse_path(cam))
+    stats["has_video"] = camera.has_video(cam)
     stats["interval_seconds"] = config.IMAGE_INTERVAL_SECONDS
     return jsonify(stats)
 

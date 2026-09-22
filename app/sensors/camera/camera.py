@@ -81,6 +81,26 @@ def timelapse_path(cam):
     return os.path.join(config.TIMELAPSE_DIR, f"{cam}.mp4")
 
 
+# An MP4 that failed to encode is still a *structurally valid* MP4: ffmpeg writes
+# the `ftyp`/`free`/`mdat` header before it has a single frame, which lands at
+# exactly 48 bytes. So neither the file existing nor ffmpeg's exit status proves
+# a build produced video -- see generate_timelapse(). A real clip is kilobytes
+# even for one frame, so anything this small is an empty container.
+MIN_VIDEO_BYTES = 1024
+
+
+def has_video(cam):
+    """True when an assembled clip exists *and* is more than an empty container.
+
+    Deliberately not ``os.path.exists``: that reported "ready" for months on a
+    tower whose every build had silently produced a 48-byte stub.
+    """
+    try:
+        return os.path.getsize(timelapse_path(cam)) >= MIN_VIDEO_BYTES
+    except OSError:
+        return False
+
+
 def archive_frame(src_path, cam):
     """Save a timestamped copy of ``src_path`` into the timelapse archive and
     prune to TIMELAPSE_MAX_FRAMES. Best-effort: never raises."""
@@ -144,6 +164,12 @@ def generate_timelapse(cam):
     out = timelapse_path(cam)
     cmd = [
         "ffmpeg",
+        # Without this ffmpeg reads stdin looking for interactive keys. Under a
+        # service (or any non-tty parent) stdin is at EOF, which it takes as the
+        # "q" quit key: it writes the container header, stops before the first
+        # frame, and **exits 0**. That produced a 48-byte mp4 on a live tower for
+        # three weeks while every build reported success.
+        "-nostdin",
         "-y",
         "-framerate",
         str(framerate_for(len(frames))),
@@ -153,10 +179,24 @@ def generate_timelapse(cam):
         os.path.join(folder, "*.jpg"),
         "-c:v",
         "libx264",
+        "-preset",
+        config.TIMELAPSE_PRESET,
         "-pix_fmt",
         "yuv420p",
         out,
     ]
-    logger.info("Assembling timelapse for %s -> %s", cam, out)
-    subprocess.run(cmd, capture_output=True, check=True)
+    logger.info("Assembling timelapse for %s (%d frames) -> %s", cam, len(frames), out)
+    proc = subprocess.run(cmd, capture_output=True, check=True, stdin=subprocess.DEVNULL)
+
+    # check=True is not enough on its own: the failure mode above exits 0. Verify
+    # the artifact instead of trusting the status, so a build that produced no
+    # video fails loudly here rather than being served as a broken clip.
+    size = os.path.getsize(out) if os.path.exists(out) else 0
+    if size < MIN_VIDEO_BYTES:
+        stderr = (proc.stderr or b"").decode("utf-8", "replace").strip()
+        raise RuntimeError(
+            f"ffmpeg produced no video for {cam} ({size} bytes from {len(frames)} "
+            f"frames); last output: {stderr[-500:] or '(none)'}"
+        )
+    logger.info("Timelapse for %s assembled: %d bytes", cam, size)
     return out

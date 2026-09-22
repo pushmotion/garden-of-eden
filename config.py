@@ -280,6 +280,21 @@ TIMELAPSE_FPS = _get_int("TIMELAPSE_FPS", 12)
 TIMELAPSE_MIN_FRAMES = _get_int("TIMELAPSE_MIN_FRAMES", 168)
 TIMELAPSE_TARGET_SECONDS = _get_int("TIMELAPSE_TARGET_SECONDS", 10)
 
+# x264 speed/size trade-off. This matters far more than it looks: a Pi Zero W is
+# a single ARMv6 core, and at x264's default preset a full 577-frame archive was
+# still encoding after seven minutes -- long enough that a service restart
+# SIGKILLed it mid-write and left a truncated mp4.
+#
+# Measured on a Zero W over 577 frames:
+#   default preset      still running at 7 min (killed)
+#   ultrafast           259 s, 7.2 MB, all 577 frames
+#   h264_v4l2m2m (HW)    99 s, 1.2 MB, but silently DROPPED 26 frames
+#
+# The hardware encoder is tempting and wrong: losing 4.5% of a growth timelapse
+# to save three minutes on a weekly background job is a bad trade, and a codec
+# that drops frames under load will drop more on a busier tower.
+TIMELAPSE_PRESET = os.getenv("TIMELAPSE_PRESET", "ultrafast")
+
 # ---------------------------------------------------------------------------
 # REST API auth (optional). When GARDEN_API_KEY is set, non-localhost
 # requests must send it via the X-API-Key header. Localhost (cron) bypasses.
