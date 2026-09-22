@@ -2,21 +2,40 @@
 #
 # A plain single-column card list, kept as the simplest possible starting point.
 #
-# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows a subset of the 47 entities
+# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 24 of the 47 entities
 # mqtt.py discovers. If you want the whole device, use pm-example.yaml in this
 # folder; it is the dashboard these towers actually run.
 #
-# Not shown here:
-#   button.<id>_pump_run_once      time.<id>_sched_pump_manual_time
-#   sensor.<id>_pump_once_next     sensor.<id>_pump_next_run
-#   sensor.<id>_pump_max_seconds   button.<id>_refresh_all
-#   sensor.<id>_refresh_status     sensor.<id>_refresh_last
-#   sensor.<id>_water_depth        sensor.<id>_water_gallons
-#   sensor.<id>_water_low_mode     sensor.<id>_log
+# Not shown here (23 of the 47), by group:
 #
-# Those cover one-time pump runs, the derived water readings, the forced-refresh
-# controls and the diagnostic log -- so a tower driven from this dashboard alone
-# cannot water on demand and shows the raw airgap rather than depth or gallons.
+#   one-time pump runs   button.<id>_pump_run_once
+#                        time.<id>_sched_pump_manual_time
+#                        sensor.<id>_pump_once_next
+#                        sensor.<id>_pump_next_run
+#   pump limits          sensor.<id>_pump_max_seconds
+#                        sensor.<id>_pump_cutoff_cm
+#   pump cleaning        switch.<id>_pump_clean
+#                        select.<id>_pump_clean_minutes
+#                        sensor.<id>_pump_clean_remaining
+#                        sensor.<id>_pump_clean_cutoff
+#                        sensor.<id>_pump_clean_result
+#   derived water        sensor.<id>_water_depth
+#                        sensor.<id>_water_gallons
+#                        sensor.<id>_water_low_mode
+#   forced refresh       button.<id>_refresh_all
+#                        sensor.<id>_refresh_status
+#                        sensor.<id>_refresh_last
+#   grow reminders       button.<id>_ack_nutrient
+#                        button.<id>_ack_reservoir_change
+#                        sensor.<id>_food_dose
+#   diagnostics          binary_sensor.<id>_pcb_over_temp
+#                        event.<id>_button
+#                        sensor.<id>_log
+#
+# So a tower driven from this dashboard alone cannot water on demand, cannot run
+# a pump cleaning cycle, cannot acknowledge a grow reminder, and will not surface
+# the hardware over-temperature alert. It does show Water Remaining alongside the
+# raw airgap, but not depth or gallons.
 #
 # MQTT discovery suggests default_entity_id = <domain>.<unique_id>.
 # Existing registry IDs are preserved. Check the actual IDs before importing;

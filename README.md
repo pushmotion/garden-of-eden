@@ -68,7 +68,7 @@ See [`docs/design.md`](docs/design.md) for architecture, and
 
 ## What this fork adds
 
-30 commits on top of upstream 2.0.0, across 35 files. Grouped by what they fix
+85 commits on top of upstream 2.0.0, across 144 files. Grouped by what they fix
 or add, with the reasoning where the behaviour is non-obvious.
 
 ### 1. Pump control was unusable from Home Assistant
@@ -199,9 +199,21 @@ a worse failure than the dry run being guarded against.
   `BASE_TOPIC + "/#"`, so two units sharing a base topic receive each other's
   commands and one tower's light switch drives both. A second tower is now one
   line: `MQTT_IDENTIFIER=gardyn_02`.
-- **New entities:** Water Depth, Water Remaining (%), Water Gallons, Next Pump
-  Run, Pending One-Time Pump Run, Max Pump Run Time, Manual Pump Run Time,
-  One-Time Pump Run, Refresh All / Refresh Status / Last Refresh, Last Log.
+- **New entities:** Water Depth, Water Remaining (%), Water Gallons, Pump
+  Cutoff, Water Low Mode, Next Pump Run, Pending One-Time Pump Run, Max Pump Run
+  Time, Manual Pump Run Time, One-Time Pump Run, Pump Clean (switch, duration,
+  remaining, cutoff, result), Plant Food Dose, Acknowledge Nutrient /
+  Acknowledge Reservoir Change, PCB Over Temperature, Refresh All / Refresh
+  Status / Last Refresh, Last Log. 47 in total.
+- **PCB Over Temperature** is driven by the PCT2075's own comparator on
+  `OVER_TEMP_ALERT_PIN`, not by thresholding the published reading — the chip
+  asserts the pin itself, so the alert still fires when the service is wedged.
+  Notify-only (`device_class: problem`, no command topic): nothing cuts the
+  lights or pump, because a false positive would cost a grow cycle to save
+  nothing. Thresholds `OVER_TEMP_HIGH`/`OVER_TEMP_HYSTERESIS` default to
+  **65/58 °C**, measured over three days on a live tower rather than guessed —
+  see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#over-temperature-alert) for the
+  data and why the shipped 36/34 would have alarmed 16 hours a day.
 - **Refresh All** re-reads every sensor and both cameras on demand and *reports*
   the light and pump duty cycle without changing either; `Refresh Status` reads
   `OK` or `PARTIAL: <what failed>`.
@@ -216,8 +228,9 @@ a worse failure than the dry run being guarded against.
   Sections layout grouped by function (status first, then lighting, pump,
   one-time runs, environment, cameras, diagnostics) and covers all 47 discovered
   entities. [`lovelace-example.yaml`](docs/homeassistant/lovelace-example.yaml)
-  is a plain card list and a **25-entity subset** — no one-time pump runs, no
-  derived water readings, no refresh controls. Its header lists the omissions.
+  is a plain card list and a **24-entity subset** — no one-time pump runs, no
+  pump cleaning, no grow acknowledgements, no refresh controls, and no
+  over-temperature alert. Its header lists all 23 omissions by group.
 - **Automations:** [`automations/`](automations/) holds optional HA time
   triggers for the light and pump. They are an *alternative* to the built-in
   scheduler, not a companion — running both leaves cron and HA fighting over the
@@ -236,7 +249,13 @@ a worse failure than the dry run being guarded against.
   watchable speed instead of flashing past, and archive status is reported.
 - The plant grid is laid out **as the physical towers**, so the screen matches
   what you are looking at.
-- A **Fahrenheit or Celsius preference** is remembered.
+- A **metric or imperial preference** is remembered per browser, covering
+  temperature, distance and volume together (°C/cm/L or °F/in/gal). `DISPLAY_UNITS`
+  in `.env` sets the default for a browser that has not chosen, so a household
+  that thinks in inches sets it once rather than on every device. Presentation
+  only: the tower measures, stores, publishes and calibrates in metric
+  regardless, exactly as it publishes Celsius to a Home Assistant instance that
+  displays Fahrenheit.
 - Pump power stats are rounded to two decimals.
 
 ### 6. Grow cycle
@@ -247,15 +266,38 @@ the cycle start, so acknowledging one does not immediately re-fire it.
 
 ### 7. Testing and ops
 
-- **185+ tests**, up from 126 on upstream `main`, including offline HA discovery validation,
-  MQTT control-path tests, and schedule regression tests.
-- `docs/DEPLOYMENT.md` documents the branch model, water calibration and how to
-  redo it, the two ways to take a wrong sensor reading, and the open items.
+- **361 tests**, up from 126 on upstream `main`, including offline HA discovery
+  validation, MQTT control-path tests, and schedule regression tests.
+- **One source for the tank geometry and the pump cap.** `tank_readings()` in
+  [`app/lib/water.py`](app/lib/water.py) derives depth, percent and gallons once;
+  `mqtt.py` publishes from it and `GET /distance` returns it, so Home Assistant
+  and the web UI display the *same computed numbers* rather than two attempts at
+  the same formula. The web page used to re-derive the percentage in JavaScript
+  from a hardcoded 5→20 cm tank, which matched `config.py`'s defaults — so it
+  agreed with HA on an uncalibrated tower and silently diverged on a calibrated
+  one. `MAX_PUMP_RUN_SECONDS` travels the same way: the pump routes, the schedule
+  compiler, `bin/water.sh`, the HA duration control and the web UI inputs all
+  read it from config, so raising it in `.env` raises all of them.
+- Project documentation lives in [`docs/`](docs/):
+  [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) (branch model, water calibration and how
+  to redo it, the over-temperature alert, the two ways to take a wrong sensor
+  reading, open items), [`RESERVOIR-STANDARD.md`](docs/RESERVOIR-STANDARD.md),
+  [`FLEET-READINESS.md`](docs/FLEET-READINESS.md),
+  [`pizero2-upgrade.md`](docs/pizero2-upgrade.md),
+  [`simulator.md`](docs/simulator.md), [`INSTALL.md`](docs/INSTALL.md),
+  [`access.md`](docs/access.md), [`design.md`](docs/design.md) and
+  [`maintenance.md`](docs/maintenance.md).
 
 > **Tests must never run on the Pi.** `tests/_hwstub.py` injects fakes only when
-> the real GPIO libs are *absent*, and `app/__init__.py` imports every sensor
-> blueprint at module level — so on a tower, importing even `app.lib.grow`
-> instantiates real GPIO drivers on a unit full of plants.
+> the real GPIO libs are *absent* — so on a tower the tests drive the actual
+> hardware on a unit full of plants.
+>
+> `app/__init__.py` used to make this worse by importing every sensor blueprint
+> at module level, so *any* `import app.<anything>` constructed the full set of
+> GPIO drivers — which meant every cron watering run built a second
+> `DistanceSensor` beside the MQTT service's own and both read wrong. Those
+> imports now happen inside `create_app()`, so `app.lib.*` can be imported by a
+> CLI without touching hardware.
 
 ### REST API endpoints
 
@@ -266,7 +308,7 @@ the cycle start, so acknowledging one does not immediately re-fire it.
 | POST | `/pump/on` `/pump/off` | toggle pump |
 | POST/GET | `/pump/speed` | set/get pump speed |
 | GET | `/pump/stats` | INA219 power data |
-| GET | `/distance` `/distance/measure` | water-level distance (cm) |
+| GET | `/distance` `/distance/measure` | raw airgap (cm) plus derived depth, percent and gallons |
 | GET | `/temperature` `/humidity` `/pcb-temp` | environment sensors |
 | GET | `/camera/upper` `/camera/lower` | capture a still (JPEG) |
 | GET/POST | `/camera/timelapse/<cam>` | fetch / build a timelapse |
@@ -279,7 +321,7 @@ the cycle start, so acknowledging one does not immediately re-fire it.
 | GET/POST/DELETE | `/schedule/pump/once` | list / arm / clear one-time pump runs |
 | GET | `/grow` · POST `/grow/start` `/grow/stage` `/grow/acknowledge` | grow-cycle |
 | GET/POST | `/pods` · POST `/pods/<id>` | pod contents (what is planted where) |
-| GET | `/system` | identity, version, detected model/profile |
+| GET | `/system` | identity, version, model/profile, tank calibration, water thresholds, pump cap, display units |
 
 Optional API-key auth applies to every route when `GARDEN_API_KEY` is set
 (`X-API-Key` header); localhost bypasses it, and `/` plus `/static` stay open so

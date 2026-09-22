@@ -74,18 +74,29 @@ Every sensor lives in `app/sensors/<name>/` and follows the same shape:
 - `routes.py` — a Flask `Blueprint` that instantiates the driver once and wraps each route with the `check_sensor_guard` decorator.
 - `__init__.py`.
 
-`app/__init__.py` (`create_app`) registers each blueprint under its own `url_prefix`: sensors (`/light`, `/pump`, `/distance`, `/temperature`, `/humidity`, `/pcb-temp`) plus `/camera`, `/schedule`, `/grow`, `/system`, and the built-in web UI at `/` (`app/web/`, a self-contained `index.html` served by `web_blueprint`; the `/` and `/static` paths bypass API-key auth so the page can load and prompt for a key). Adding a sensor = new folder following this pattern + one `register_blueprint` line. `create_app` also applies CORS and registers optional API-key auth (`_register_auth`, active only when `GARDEN_API_KEY` is set; localhost bypasses).
+`app/__init__.py` (`create_app`) registers each blueprint under its own `url_prefix`: sensors (`/light`, `/pump`, `/distance`, `/temperature`, `/humidity`, `/pcb-temp`) plus `/camera`, `/schedule`, `/grow`, `/pods`, `/system`, and the built-in web UI at `/` (`app/web/`, a self-contained `index.html` served by `web_blueprint`; the `/` and `/static` paths bypass API-key auth so the page can load and prompt for a key). Adding a sensor = new folder following this pattern + one `register_blueprint` line. `create_app` also applies CORS and registers optional API-key auth (`_register_auth`, active only when `GARDEN_API_KEY` is set; localhost bypasses).
 
 ### Shared helpers (`app/lib/`)
 - `hardware.py` — **`get_pin_factory()`** returns the one shared `PiGPIOFactory` (honors `PIGPIO_HOST`/`PIGPIO_PORT` for Docker); **`detect_model()`** infers the Gardyn model from I2C addresses.
 - `lib.py` — `check_sensor_guard(sensor, name)`: 400 if the sensor is `None` (failed init), **503** if the handler raises (hardware unavailable), 400 on `ValueError`.
 - `logging_config.py` — `configure_logging()` used by `run.py`, `mqtt.py`, CLIs (level via `LOG_LEVEL`).
-- `water.py` (`is_water_low`), `grow.py` (grow-cycle state + reminders), `state.py` (actuator state persistence for power-loss recovery).
+- `water.py` — `is_water_low`, `pump_cutoff` (resolves the interlock, falling back to the alert), `is_reading_fresh`, and **`tank_readings()`**, the single derivation of depth/percent/gallons from the airgap. Nothing downstream of `config.py` may keep its own copy of the tank geometry: `mqtt.py` publishes from `tank_readings()` and `GET /distance` returns it, so HA and the web UI show the same computed numbers.
+- `water_guard.py` / `cleaning_guard.py` — CLI entry points for the cron path (`bin/water.sh`), which cannot read the sensor itself without cross-talking with the service, so they act on the persisted verdict. Both fail *open*: a stopped service must not withhold water indefinitely.
+- `ambient.py` — `stable_reading()`, a median-of-N plus a plausibility band for the AM2320/DHT20. The part intermittently returns the *humidity* value in the temperature slot, and a desynced read is a well-formed float, so the drivers' exception retries never fire on it.
+- `grow.py` (grow-cycle state, reminders and nutrient dose), `state.py` (actuator state persistence for power-loss recovery), `persist.py` (atomic JSON writes), `locking.py`, `runtime.py`, `pods.py`, `light_schedule.py`, `cleaning.py`.
 
 Route drivers are instantiated at import inside a `try/except` → `None` on failure, so the app imports off-Pi and `check_sensor_guard` handles the degraded case.
 
+**The blueprint imports live inside `create_app()`, not at module scope, and must stay there.** Each `routes.py` builds its driver at import, so importing them from `app/__init__.py` meant *any* `import app.<anything>` constructed the full set of GPIO drivers. `bin/water.sh` → `pump.py` → `app.lib.hardware` hit exactly that, so every cron watering run quietly built a second `DistanceSensor` beside the MQTT service's own — and two processes triggering one ultrasonic sensor cross-talk, so both read wrong.
+
 ### Configuration is centralized
 All pins, I2C addresses, thresholds, file paths, and feature flags live in `config.py` (env-driven, hex-aware int parsing) and are documented in `.env-dist`. Drivers default their pins/addresses from `config.*` — don't hardcode.
+
+This is enforced, not just encouraged. Values that were re-typed elsewhere have each caused a real defect: the web UI's hardcoded tank geometry disagreed with HA on any calibrated tower, and `MAX_PUMP_RUN_SECONDS` was ignored by `bin/water.sh`, which kept its own `300`. Both now derive from config, and `tests/test_tank_parity.py` and `tests/test_calibration_exposure.py` fail if a client starts deriving its own again.
+
+`GET /system` is how non-Python clients get these values (tank calibration, both water thresholds, the pump cap, `DISPLAY_UNITS`) — a client should read them, never hardcode them.
+
+`DISPLAY_UNITS` (`metric`/`imperial`) is presentation only. The tower always measures, stores, publishes and calibrates in metric — the same arrangement temperature has always had, where it publishes Celsius and HA converts for display. A unit preference that could move a threshold would be a safety bug, and `tests/test_display_units.py` asserts it cannot.
 
 ### Three entry points, one driver layer
 `mqtt.py`, `run.py`/`app/`, and the per-driver CLIs all import the **same** driver classes from `app/sensors/*`. Behavior changes (e.g. how the pump ramps speed) belong in the driver, not in any single entry point.
@@ -96,6 +107,7 @@ All pins, I2C addresses, thresholds, file paths, and feature flags live in `conf
 - Publishes **Home Assistant MQTT discovery** (`send_discovery_messages`), reporting `detect_model()` as the device model. Topic base `BASE_TOPIC`.
 - Publishes telemetry on a timer plus grow-cycle stage/reminders; water-low logic uses `app.lib.water.is_water_low`.
 - **Power-loss recovery**: restores actuator state on connect (`restore_actuator_state`), persists state on every toggle (`app.lib.state`), and turns the pump off on SIGTERM/SIGINT (`graceful_shutdown`).
+- **Over-temperature alert** (`app/sensors/pcb_temp/over_temp.py`): the PCT2075 drives a comparator output on `OVER_TEMP_ALERT_PIN` *itself*, so the alert fires even when the service is wedged — that is the whole reason it beats thresholding the published reading. `mqtt.py` programs the chip at startup, watches the pin's edges, and publishes a notify-only `problem` binary sensor. Optional by design: if the chip or pin is unavailable it logs and leaves the entity absent rather than taking the service down, and it publishes *nothing* rather than a confident `OFF` nobody is watching. Keep the chip's **active-low** default; inverting it makes a disconnected chip read as "fine".
 
 ### Simulator (off-Pi)
 `simulator/` runs the full stack with realistic fake hardware. `fake_hardware.install()` injects stateful fakes into `sys.modules` (distinct from `tests/_hwstub.py`, which is bare mocks for unit tests) and must run before importing `app`. `python -m simulator.serve` serves the web UI + REST (reloader off; camera returns a placeholder JPEG; **crontab is sandboxed** so schedules never touch the host). `python -m simulator.mqtt_sim` runs `mqtt.py` via `runpy` against a local broker for Home Assistant testing. `tests/test_discovery.py` validates HA discovery offline; `tests/test_integration.py` smoke-tests every GET route.
@@ -113,6 +125,16 @@ All config flows through `config.py`, which reads `.env` (copy from `.env-dist`)
 - Requires the **pigpiod** daemon; drivers use `PiGPIOFactory` rather than the default gpiozero pin factory. `mqtt.service` depends on `pigpiod.service`.
 - I2C device addresses are meaningful: PCT2075 `0x48` (PCB temp), INA219 `0x40` (pump power), DHT20 `0x38`, AM2320 `0x5c`. The AM2320 needs a wakeup sequence and won't show in a plain `i2cdetect`.
 - Targets **Python 3.9+**; pinned deps in `requirements.txt` are chosen for ARM/Pi compatibility — be cautious bumping versions.
+
+## Project documentation (`docs/`)
+
+- **`DEPLOYMENT.md`** — the one to read first. Branch model, water calibration and how to redo it, how watering is guarded, the over-temperature alert, units, the two ways to take a *wrong* sensor reading, and open items.
+- `RESERVOIR-STANDARD.md` — the measured reservoir standard for the Gardyn Home tank.
+- `FLEET-READINESS.md` — what a second/third tower needs before it goes live.
+- `pizero2-upgrade.md` — moving a tower from a Zero W to a Zero 2 W.
+- `simulator.md` — running the full stack off-Pi.
+- `INSTALL.md`, `access.md`, `design.md`, `maintenance.md` — inherited from upstream.
+- `homeassistant/` — two example dashboards. `pm-example.yaml` covers all 47 discovered entities; `lovelace-example.yaml` is a 24-entity subset and its header lists every omission.
 
 ## Commit conventions
 
