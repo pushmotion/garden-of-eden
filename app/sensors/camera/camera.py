@@ -179,6 +179,8 @@ def generate_timelapse(cam):
         os.path.join(folder, "*.jpg"),
         "-c:v",
         "libx264",
+        "-preset",
+        config.TIMELAPSE_PRESET,
         "-pix_fmt",
         "yuv420p",
         out,
