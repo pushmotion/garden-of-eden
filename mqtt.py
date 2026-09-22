@@ -14,6 +14,7 @@ from time import sleep
 import paho.mqtt.client as mqtt
 from gpiozero import Button  # Import gpiozero Button
 
+from app.lib import cleaning as cleaning_lib
 from app.lib import grow as grow_lib
 from app.lib import state as state_lib
 from app.lib.hardware import current_duty_fraction, detect_model, get_pin_factory
@@ -26,7 +27,13 @@ from app.sensors.humidity.humidity import humidity_sensor
 from app.sensors.light.routes import light_control
 from app.sensors.pcb_temp import over_temp as over_temp_lib
 from app.sensors.pcb_temp.pcb_temp import get_pcb_temperature
-from app.sensors.pump.routes import pump_control
+from app.sensors.pump.routes import (
+    CleaningRefused,
+    pump_control,
+    resume_cleaning_if_active,
+    start_cleaning,
+    stop_cleaning,
+)
 from app.sensors.schedule import schedule as sched_lib
 from app.sensors.temperature.temperature import temperature_sensor
 from config import (
@@ -35,6 +42,8 @@ from config import (
     BROKER,
     BUTTON_PIN,
     CAMERA_RESOLUTION,
+    CLEANING_DEFAULT_SECONDS,
+    CLEANING_MAX_SECONDS,
     DEFAULT_BRIGHTNESS,
     DEFAULT_PUMP_SPEED,
     IDENTIFIER,
@@ -199,7 +208,14 @@ def _ensure_pump_safety_armed():
     ``ACTUATOR_POLL_SECONDS`` and re-arming each tick would push the deadline out
     forever and the cap would never fire -- the opposite of the guarantee.
     Returns True only when it actually started one, so the caller can log it.
+
+    A cleaning run is the one case where an energized pump *is* already covered,
+    by its own watchdog and its own much larger budget. Arming the five-minute
+    cap over it would stop the clean at 5:00 -- and from the reconcile loop, so
+    nothing in the UI would ever say why.
     """
+    if cleaning_lib.is_active():
+        return False
     with _pump_timer_lock:
         if _pump_safety_pending_locked():
             return False
@@ -232,6 +248,17 @@ def toggle_light():
 
 def toggle_pump():
     global pump_state
+    # The pump is already running during a clean, so a double-press means "make
+    # it stop" -- and that has to end the *session*, not just the motor. Turning
+    # the pump off under a live session would leave the watchdog holding the
+    # tower hostage for the rest of its two hours with nothing actually running.
+    if cleaning_lib.is_active():
+        logger.info("Button pressed during a cleaning run; ending it")
+        stop_cleaning(cleaning_lib.DONE_STOPPED)
+        pump_state = False
+        client.publish(BASE_TOPIC + "/pump/state", "OFF")
+        publish_cleaning_state(client)
+        return
     pump_state = not pump_state
     if pump_state:
         logger.info("Toggling Pump ON")
@@ -1010,6 +1037,76 @@ def send_discovery_messages(client):
             "device": device_info,
         },
     )
+    # ---- Cleaning mode -------------------------------------------------
+    # A switch rather than a button: a cleaning run has a duration and can be
+    # stopped, so the control needs to show whether one is happening. A button
+    # could only ever start them.
+    pub(
+        f"homeassistant/switch/gardyn/{IDENTIFIER}_pump_clean/config",
+        {
+            "name": "Cleaning Mode",
+            "unique_id": IDENTIFIER + "_pump_clean",
+            "state_topic": BASE_TOPIC + "/pump/clean/state",
+            "command_topic": BASE_TOPIC + "/pump/clean/set",
+            "icon": "mdi:spray-bottle",
+            "device": device_info,
+        },
+    )
+    pub(
+        f"homeassistant/select/gardyn/{IDENTIFIER}_pump_clean_minutes/config",
+        {
+            "name": "Cleaning Duration",
+            "unique_id": IDENTIFIER + "_pump_clean_minutes",
+            "state_topic": BASE_TOPIC + "/pump/clean/minutes",
+            "command_topic": BASE_TOPIC + "/pump/clean/minutes/set",
+            "options": [str(m) for m in cleaning_preset_options()],
+            "icon": "mdi:timer-cog-outline",
+            "device": device_info,
+        },
+    )
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_clean_remaining/config",
+        {
+            "name": "Cleaning Time Left",
+            "unique_id": IDENTIFIER + "_pump_clean_remaining",
+            "state_topic": BASE_TOPIC + "/pump/clean/remaining",
+            "unit_of_measurement": "s",
+            "device_class": "duration",
+            "icon": "mdi:timer-sand",
+            "device": device_info,
+        },
+    )
+    # Why the last run ended. A clean that stops early stops from a watchdog, so
+    # without this the only record is the log.
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_clean_result/config",
+        {
+            "name": "Last Cleaning Result",
+            "unique_id": IDENTIFIER + "_pump_clean_result",
+            "state_topic": BASE_TOPIC + "/pump/clean/result",
+            "icon": "mdi:clipboard-check-outline",
+            "device": device_info,
+        },
+    )
+    # Read-only for the same reason as "Max Pump Run Time": it is the threshold
+    # that decides whether a long run is allowed to keep going, and it is worth
+    # seeing when calibrating. It is not worth nudging from a phone.
+    pub(
+        f"homeassistant/sensor/gardyn/{IDENTIFIER}_pump_clean_cutoff/config",
+        {
+            "name": "Cleaning Water Cutoff",
+            "unique_id": IDENTIFIER + "_pump_clean_cutoff",
+            "state_topic": BASE_TOPIC + "/pump/clean/cutoff",
+            "unit_of_measurement": "cm",
+            # Every distance entity is published in cm and carries this, so Home
+            # Assistant converts for a viewer who prefers inches instead of the
+            # firmware guessing at units.
+            "device_class": "distance",
+            "icon": "mdi:water-alert-outline",
+            "device": device_info,
+        },
+    )
+
     # Arms a single dated cron entry at "Manual Pump Run Time". Adding a one-off
     # deliberately does not touch the recurring schedule.
     pub(
@@ -1303,6 +1400,142 @@ def publish_one_time_state(client):
         logger.exception("Error publishing one-time pump run state")
 
 
+# Cleaning duration presets offered to Home Assistant, in minutes. A select
+# rather than a free number: these are the only lengths anyone actually asks
+# for, and a list cannot produce a value the cap would then reject.
+CLEANING_PRESET_MINUTES = [15, 30, 45, 60, 90, 120]
+
+
+def cleaning_preset_options():
+    """The presets that fit under ``CLEANING_MAX_SECONDS``.
+
+    Filtered rather than clamped, so the dashboard can never offer a duration
+    the tower will refuse. Always offers at least one option, because a select
+    entity with an empty list is an entity Home Assistant cannot render.
+    """
+    cap_minutes = max(1, CLEANING_MAX_SECONDS // 60)
+    options = [m for m in CLEANING_PRESET_MINUTES if m <= cap_minutes]
+    return options or [cap_minutes]
+
+
+def _default_cleaning_minutes():
+    """The preset to preselect: the configured default, snapped to the nearest
+    offered option so the select always shows a value that is actually in it."""
+    options = cleaning_preset_options()
+    want = max(1, CLEANING_DEFAULT_SECONDS // 60)
+    return min(options, key=lambda m: (abs(m - want), m))
+
+
+cleaning_minutes = state_lib.load_state().get("cleaning_minutes") or _default_cleaning_minutes()
+
+
+def publish_cleaning_state(client):
+    """Publish the cleaning switch, its duration, and how long is left.
+
+    Remaining time is published as a plain integer of seconds rather than a
+    timestamp: it counts down to zero and then stays there, which is what a
+    "is this still running?" glance wants, and it needs no timezone to be right.
+    """
+    try:
+        status = cleaning_lib.status()
+        client.publish(
+            BASE_TOPIC + "/pump/clean/state", "ON" if status["active"] else "OFF", retain=True
+        )
+        client.publish(
+            BASE_TOPIC + "/pump/clean/remaining", str(status["remaining_seconds"]), retain=True
+        )
+        client.publish(BASE_TOPIC + "/pump/clean/minutes", str(cleaning_minutes), retain=True)
+        client.publish(
+            BASE_TOPIC + "/pump/clean/result", status["last_result"] or "none", retain=True
+        )
+        cutoff = status["cutoff_cm"]
+        client.publish(
+            BASE_TOPIC + "/pump/clean/cutoff",
+            f"{cutoff:.2f}" if cutoff else "unavailable",
+            retain=True,
+        )
+    except Exception:
+        logger.exception("Error publishing cleaning state")
+
+
+def handle_cleaning_command(client, payload):
+    """ON starts a cleaning run at the selected duration; OFF ends one.
+
+    A refusal is reported through the switch going straight back to OFF plus a
+    WARNING (which the 'Last Log' sensor surfaces in Home Assistant). The
+    alternative -- leaving the switch optimistically ON -- would show a cleaning
+    run that is not happening, which is the worst of both.
+    """
+    command = (payload or "").strip().upper()
+    if command == "ON":
+        if cleaning_lib.is_active():
+            publish_cleaning_state(client)
+            return
+        try:
+            session = start_cleaning(seconds=cleaning_minutes * 60)
+        except (ValueError, CleaningRefused) as exc:
+            logger.warning("Cleaning run refused: %s", exc)
+            publish_cleaning_state(client)
+            return
+        logger.info("Cleaning run started from Home Assistant (%ss)", session["seconds"])
+    elif command == "OFF":
+        if cleaning_lib.is_active():
+            stop_cleaning(cleaning_lib.DONE_STOPPED)
+    else:
+        logger.warning("Ignoring unrecognized cleaning command: %r", payload)
+        return
+
+    # Republish both: starting a clean turns the pump on, and the pump entity
+    # would otherwise not catch up until the next reconcile poll.
+    publish_cleaning_state(client)
+    publish_pump_state(client)
+
+
+def handle_cleaning_minutes(client, payload):
+    global cleaning_minutes
+    try:
+        minutes = int(float(str(payload).strip()))
+    except (TypeError, ValueError):
+        logger.warning("Ignoring unusable cleaning duration: %r", payload)
+        return
+    if minutes not in cleaning_preset_options():
+        logger.warning("Ignoring out-of-range cleaning duration: %r", minutes)
+        return
+    cleaning_minutes = minutes
+    state_lib.save_state(cleaning_minutes=minutes)
+    publish_cleaning_state(client)
+
+
+def enforce_cleaning_deadline(client):
+    """Backstop for the watchdog in the pump routes.
+
+    That watchdog is a thread, and threads die with their process. This runs on
+    the reconcile loop, which is the one thing guaranteed to keep ticking, so a
+    cleaning run cannot outlive the deadline just because the thread that owned
+    it went away. Returns True when it ended a run.
+    """
+    try:
+        if cleaning_lib.expired():
+            logger.warning("Cleaning deadline passed; stopping the pump")
+            stop_cleaning(cleaning_lib.DONE_COMPLETED)
+            publish_cleaning_state(client)
+            return True
+        if cleaning_lib.is_active():
+            ok, reason = cleaning_lib.water_verdict()
+            if not ok:
+                logger.warning("Cleaning run stopping: %s", reason)
+                stop_cleaning(
+                    cleaning_lib.DONE_NO_READING
+                    if "reading" in reason
+                    else cleaning_lib.DONE_LOW_WATER
+                )
+                publish_cleaning_state(client)
+                return True
+    except Exception:
+        logger.exception("Error enforcing the cleaning deadline")
+    return False
+
+
 def arm_one_time_pump_run(client):
     """Install a single dated cron entry at the manual run time.
 
@@ -1458,6 +1691,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
     publish_over_temp_state(client)
     publish_grow_state(client)
     publish_schedule_state(client)
+    publish_cleaning_state(client)
     # Report the actuators' true duty cycle so HA never shows a stale retained
     # value. Read-only; restore_actuator_state() owns any actual restoration.
     try:
@@ -1635,6 +1869,12 @@ def on_message(client, userdata, msg):
         elif topic_suffix == "schedule/pump/manual/run/set":
             arm_one_time_pump_run(client)
 
+        elif topic_suffix == "pump/clean/set":
+            handle_cleaning_command(client, payload)
+
+        elif topic_suffix == "pump/clean/minutes/set":
+            handle_cleaning_minutes(client, payload)
+
     except ValueError as e:
         logger.warning(f"Rejected message on topic {msg.topic}: {e}")
     except Exception as e:
@@ -1807,6 +2047,25 @@ def restore_actuator_state(client):
             light_state = True
             light.set_duty_cycle(brightness)
             client.publish(BASE_TOPIC + "/light/state", "ON")
+
+        # A cleaning run that still has time left is restored *as a cleaning
+        # run*, before the ordinary pump restore below gets a chance to arm the
+        # five-minute cap over it -- which would end a resumed two-hour clean
+        # five minutes after every restart.
+        #
+        # SIGTERM stops the pump but deliberately leaves the deadline in the
+        # state file, so a service restart picks the run back up while a genuine
+        # outage long enough to pass the deadline does not: session() reports an
+        # elapsed run as no run, and resume_cleaning_if_active() stops it.
+        resumed = resume_cleaning_if_active()
+        if resumed is not None:
+            pump_state = True
+            pump.set_speed(resumed["speed"])
+            client.publish(BASE_TOPIC + "/pump/state", "ON")
+            publish_cleaning_state(client)
+            logger.info("Restored actuator state mid-clean: %s", saved)
+            return
+
         if saved.get("pump_on"):
             pump_state = True
             pump.set_speed(speed)
@@ -1862,6 +2121,17 @@ def reconcile_actuator_state(client):
             # _ensure_pump_safety_armed() will not extend a pending timer, so
             # polling this cannot push the deadline out. A None reading (pigpio
             # unavailable) means "unknown" and is left alone.
+            # Before arming anything: a cleaning run past its deadline, or over
+            # a tank that has dropped below the cleaning cutoff, ends here. This
+            # loop is the one thing guaranteed to keep ticking, so it is the
+            # backstop for the watchdog thread in the pump routes.
+            if enforce_cleaning_deadline(client):
+                pump_pct = _live_duty_percent(pump)
+            elif cleaning_lib.is_active():
+                # Keep "Cleaning Time Left" counting down. Only while a run is
+                # active, so an idle tower publishes nothing on this topic.
+                publish_cleaning_state(client)
+
             if pump_pct:
                 if _ensure_pump_safety_armed():
                     logger.warning(
@@ -1994,8 +2264,17 @@ def publish_grow_reminders(client):
 
 
 def graceful_shutdown(signum, frame):
-    """Turn the pump off and release pigpio cleanly on SIGTERM/SIGINT (#3)."""
+    """Turn the pump off and release pigpio cleanly on SIGTERM/SIGINT (#3).
+
+    A cleaning run's deadline is deliberately left in place. Stopping the pump
+    is unconditional -- nothing should keep spinning through a shutdown -- but
+    discarding the session would turn every `systemctl restart` into a silently
+    abandoned clean. Leaving it lets ``restore_actuator_state`` pick the run
+    back up, while an outage long enough to pass the deadline still ends it.
+    """
     logger.info("Received signal %s; shutting down gracefully", signum)
+    if cleaning_lib.is_active():
+        logger.info("Shutting down mid-clean; the run resumes if the service returns in time")
     try:
         pump.off()
         pump.close()
