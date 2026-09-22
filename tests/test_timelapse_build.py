@@ -290,3 +290,98 @@ class DarkFrameTestCase(unittest.TestCase):
             os.path.basename(f) for f in glob.glob(os.path.join(self.folder, "rejected", "*.jpg"))
         )
         self.assertEqual(rejected, ["b.jpg", "d.jpg"])
+
+
+class BulkLumaScanTestCase(unittest.TestCase):
+    """The bulk scan must never mis-map an index onto the wrong file.
+
+    Spawning one ffmpeg per frame cost ~1.3s on a Pi Zero W -- 12 minutes for a
+    579-frame archive. One pass at 1/8 DCT-scaled decode does it in ~0.26s per
+    frame. But a misaligned index would quarantine a *good* frame, so a scan
+    that cannot be verified must be refused rather than trusted.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        for p in (
+            patch.object(config, "TIMELAPSE_DIR", self.tmp),
+            patch.object(config, "TIMELAPSE_MIN_LUMA", 40),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        self.folder = os.path.join(self.tmp, "upper")
+        os.makedirs(self.folder, exist_ok=True)
+        for name in ("a.jpg", "b.jpg", "c.jpg"):
+            with open(os.path.join(self.folder, name), "wb") as fh:
+                fh.write(b"\xff\xd8" + b"\0" * 60_000)
+
+    def _ffmpeg_output(self, values):
+        lines = []
+        for i, v in enumerate(values):
+            lines.append(f"frame:{i}    pts:{i}       pts_time:{i}")
+            lines.append(f"lavfi.signalstats.YAVG={v}")
+        return "\n".join(lines).encode()
+
+    def _patch_run(self, stdout):
+        class R:
+            pass
+
+        R.stdout = stdout
+        R.stderr = b""
+        return patch("subprocess.run", lambda *a, **k: R)
+
+    def test_scan_returns_one_value_per_frame(self):
+        with self._patch_run(self._ffmpeg_output([92.5, 0.0, 121.4])):
+            self.assertEqual(camera.scan_mean_luma(self.folder), [92.5, 0.0, 121.4])
+
+    def test_uses_lowres_and_signalstats(self):
+        seen = {}
+
+        class R:
+            stdout = self._ffmpeg_output([1, 2, 3])
+            stderr = b""
+
+        def run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            return R
+
+        with patch("subprocess.run", run):
+            camera.scan_mean_luma(self.folder)
+        self.assertIn("-lowres", seen["cmd"])
+        self.assertIn("signalstats,metadata=print:file=-", seen["cmd"])
+
+    def test_short_scan_is_refused_not_guessed(self):
+        """ffmpeg stops at an unreadable frame; a short result means the
+        index->file mapping is wrong and acting on it moves the wrong files."""
+        with self._patch_run(self._ffmpeg_output([92.5])):  # 1 reading, 3 frames
+            self.assertIsNone(camera.scan_mean_luma(self.folder))
+
+    def test_gappy_frame_indices_are_refused(self):
+        out = b"frame:0\nlavfi.signalstats.YAVG=90\nframe:2\nlavfi.signalstats.YAVG=0\n"
+        with self._patch_run(out):
+            self.assertIsNone(camera.scan_mean_luma(self.folder))
+
+    def test_prune_uses_the_bulk_scan(self):
+        with self._patch_run(self._ffmpeg_output([92.5, 0.0, 121.4])):
+            self.assertEqual(camera.prune_dark_frames("upper"), 1)
+        kept = sorted(os.path.basename(f) for f in glob.glob(os.path.join(self.folder, "*.jpg")))
+        self.assertEqual(kept, ["a.jpg", "c.jpg"])
+
+    def test_prune_falls_back_when_the_scan_cannot_be_trusted(self):
+        """Correctness beats speed: an unverifiable scan drops to per-frame."""
+        lumas = {
+            os.path.join(self.folder, "a.jpg"): 95,
+            os.path.join(self.folder, "b.jpg"): 1,
+            os.path.join(self.folder, "c.jpg"): 99,
+        }
+        with (
+            patch.object(camera, "scan_mean_luma", lambda f: None),
+            patch.object(camera, "frame_mean_luma", lambda p: lumas[p]),
+        ):
+            self.assertEqual(camera.prune_dark_frames("upper"), 1)
+        kept = sorted(os.path.basename(f) for f in glob.glob(os.path.join(self.folder, "*.jpg")))
+        self.assertEqual(kept, ["a.jpg", "c.jpg"])
+
+    def test_threshold_of_zero_prunes_nothing(self):
+        with patch.object(config, "TIMELAPSE_MIN_LUMA", 0):
+            self.assertEqual(camera.prune_dark_frames("upper"), 0)

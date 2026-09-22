@@ -8,6 +8,7 @@ import datetime
 import glob
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -139,6 +140,79 @@ def is_too_dark(path):
     return luma is not None and luma < config.TIMELAPSE_MIN_LUMA
 
 
+_YAVG_RE = re.compile(r"^lavfi\.signalstats\.YAVG=([\d.]+)", re.MULTILINE)
+_FRAME_RE = re.compile(r"^frame:(\d+)", re.MULTILINE)
+
+
+def scan_mean_luma(folder):
+    """Mean luma for every frame in ``folder``, in one ffmpeg pass.
+
+    Returns a list aligned with ``sorted(glob("*.jpg"))``, or None when the scan
+    cannot be trusted.
+
+    Spawning one ffmpeg per frame costs ~1.3s on a Pi Zero W -- 12 minutes for a
+    579-frame archive, almost all of it process startup. One pass at 1/8 DCT-
+    scaled decode does the same work in ~0.26s per frame.
+
+    ``-lowres 3`` decodes JPEG at an eighth of full size straight out of the DCT,
+    which is far cheaper than a full decode and leaves the mean unchanged for
+    this purpose: measured against a full decode the values agreed to within
+    0.1% (92.58 vs 92.51, 121.55 vs 121.47).
+
+    signalstats rather than the cheaper ``scale=1:1`` trick used for single
+    frames, because it prints a ``frame:N`` marker per reading. A bare byte
+    stream gives no way to notice a skipped frame, and a misaligned index here
+    would quarantine the *wrong* file -- so alignment has to be checkable.
+    """
+    frames = sorted(glob.glob(os.path.join(folder, "*.jpg")))
+    if not frames:
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-lowres",
+                "3",
+                "-f",
+                "image2",
+                "-pattern_type",
+                "glob",
+                "-i",
+                os.path.join(folder, "*.jpg"),
+                "-vf",
+                "signalstats,metadata=print:file=-",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=1800,
+        )
+        out = proc.stdout.decode("utf-8", "replace")
+        values = [float(v) for v in _YAVG_RE.findall(out)]
+        indices = [int(i) for i in _FRAME_RE.findall(out)]
+    except Exception:  # noqa: BLE001 - the caller falls back to per-frame
+        logger.warning("Bulk luma scan failed for %s; falling back", folder)
+        return None
+
+    # Refuse to guess. ffmpeg's image2 demuxer stops at the first frame it
+    # cannot read, so a short or gappy result means the index->file mapping is
+    # wrong, and acting on it would move frames that are perfectly good.
+    if len(values) != len(frames) or indices != list(range(len(frames))):
+        logger.warning(
+            "Bulk luma scan for %s returned %d readings for %d frames; falling back",
+            folder,
+            len(values),
+            len(frames),
+        )
+        return None
+    return values
+
+
 def prune_dark_frames(cam):
     """Quarantine already-archived dark frames. Returns how many were moved.
 
@@ -147,9 +221,20 @@ def prune_dark_frames(cam):
     """
     folder = _frames_dir(cam)
     reject_dir = os.path.join(folder, "rejected")
+    frames = sorted(glob.glob(os.path.join(folder, "*.jpg")))
+    threshold = config.TIMELAPSE_MIN_LUMA
+    if not threshold or not frames:
+        return 0
+
+    lumas = scan_mean_luma(folder)
+    if lumas is None:
+        # One process per frame: correct but ~5x slower. Only reached when the
+        # bulk scan could not be verified.
+        lumas = [frame_mean_luma(f) for f in frames]
+
     moved = 0
-    for frame in sorted(glob.glob(os.path.join(folder, "*.jpg"))):
-        if not is_too_dark(frame):
+    for frame, luma in zip(frames, lumas):
+        if luma is None or luma >= threshold:
             continue
         os.makedirs(reject_dir, exist_ok=True)
         shutil.move(frame, os.path.join(reject_dir, os.path.basename(frame)))
