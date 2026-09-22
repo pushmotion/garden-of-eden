@@ -224,3 +224,69 @@ class UnusableFrameTestCase(unittest.TestCase):
             patch.object(camera, "_encoded_frame_count", lambda p: None),
         ):
             self.assertTrue(camera.generate_timelapse("upper"))
+
+
+class DarkFrameTestCase(unittest.TestCase):
+    """Lights-off frames are black and only dilute a growth timelapse.
+
+    Judged by mean luminance, not file size: a dark frame is full of sensor
+    noise and compresses *worse* than a lit one (measured medians were 189 KB at
+    midnight against 173 KB at midday), so size separates nothing.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        for p in (
+            patch.object(config, "TIMELAPSE_DIR", self.tmp),
+            patch.object(config, "TIMELAPSE_MIN_LUMA", 40),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        self.folder = os.path.join(self.tmp, "upper")
+        os.makedirs(self.folder, exist_ok=True)
+
+    def _src(self, name="frame.jpg"):
+        path = os.path.join(self.tmp, name)
+        with open(path, "wb") as fh:
+            fh.write(b"\xff\xd8" + b"\0" * 60_000)
+        return path
+
+    def test_dark_frame_is_not_archived(self):
+        with patch.object(camera, "frame_mean_luma", lambda p: 3):
+            camera.archive_frame(self._src(), "upper")
+        self.assertEqual(glob.glob(os.path.join(self.folder, "*.jpg")), [])
+
+    def test_lit_frame_is_archived(self):
+        with patch.object(camera, "frame_mean_luma", lambda p: 98):
+            camera.archive_frame(self._src(), "upper")
+        self.assertEqual(len(glob.glob(os.path.join(self.folder, "*.jpg"))), 1)
+
+    def test_unmeasurable_brightness_keeps_the_frame(self):
+        """Fails open: dropping a good frame is worse than keeping a dark one."""
+        with patch.object(camera, "frame_mean_luma", lambda p: None):
+            camera.archive_frame(self._src(), "upper")
+        self.assertEqual(len(glob.glob(os.path.join(self.folder, "*.jpg"))), 1)
+
+    def test_threshold_of_zero_disables_the_check(self):
+        with patch.object(config, "TIMELAPSE_MIN_LUMA", 0):
+            with patch.object(camera, "frame_mean_luma", lambda p: 0):
+                camera.archive_frame(self._src(), "upper")
+        self.assertEqual(len(glob.glob(os.path.join(self.folder, "*.jpg"))), 1)
+
+    def test_prune_dark_frames_quarantines_existing_archives(self):
+        lumas = {}
+        for name, luma in (("a.jpg", 98), ("b.jpg", 2), ("c.jpg", 101), ("d.jpg", 0)):
+            path = os.path.join(self.folder, name)
+            with open(path, "wb") as fh:
+                fh.write(b"\xff\xd8" + b"\0" * 60_000)
+            lumas[path] = luma
+
+        with patch.object(camera, "frame_mean_luma", lambda p: lumas[p]):
+            self.assertEqual(camera.prune_dark_frames("upper"), 2)
+
+        kept = sorted(os.path.basename(f) for f in glob.glob(os.path.join(self.folder, "*.jpg")))
+        self.assertEqual(kept, ["a.jpg", "c.jpg"])
+        rejected = sorted(
+            os.path.basename(f) for f in glob.glob(os.path.join(self.folder, "rejected", "*.jpg"))
+        )
+        self.assertEqual(rejected, ["b.jpg", "d.jpg"])

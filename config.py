@@ -295,6 +295,22 @@ TIMELAPSE_TARGET_SECONDS = _get_int("TIMELAPSE_TARGET_SECONDS", 10)
 # that drops frames under load will drop more on a busier tower.
 TIMELAPSE_PRESET = os.getenv("TIMELAPSE_PRESET", "ultrafast")
 
+# Drop near-black frames. Captures run hourly around the clock, so roughly a
+# third of a growth timelapse is the lights being off -- nothing visible, and it
+# swamps the part worth watching.
+#
+# Mean luminance (0-255) measured across a tower's archive:
+#   lights on   89-114, lowest seen 57
+#   lights off  ~27, many at 0
+#
+# 40 sits in the empty gap. Judged per frame, not per hour, because the
+# photoperiod moves and some midnight frames are legitimately lit. 0 disables.
+#
+# Do NOT use file size as the proxy: a dark frame is full of sensor noise and
+# compresses *worse* than a lit one -- measured medians were 189 KB at midnight
+# against 173 KB at midday, so size separates nothing.
+TIMELAPSE_MIN_LUMA = _get_int("TIMELAPSE_MIN_LUMA", 40)
+
 # ---------------------------------------------------------------------------
 # REST API auth (optional). When GARDEN_API_KEY is set, non-localhost
 # requests must send it via the X-API-Key header. Localhost (cron) bypasses.
