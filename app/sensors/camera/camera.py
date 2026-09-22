@@ -88,6 +88,12 @@ def timelapse_path(cam):
 # even for one frame, so anything this small is an empty container.
 MIN_VIDEO_BYTES = 1024
 
+# ffmpeg's image2 demuxer stops at the first frame it cannot read, so a single
+# unusable file truncates the whole clip from that point -- and still exits 0.
+# One zero-byte frame, archived while a tower's cameras were unplugged, cut a
+# 225-frame timelapse down to 2. A real 640x480 capture is tens of kilobytes.
+MIN_FRAME_BYTES = 1024
+
 
 def has_video(cam):
     """True when an assembled clip exists *and* is more than an empty container.
@@ -105,6 +111,16 @@ def archive_frame(src_path, cam):
     """Save a timestamped copy of ``src_path`` into the timelapse archive and
     prune to TIMELAPSE_MAX_FRAMES. Best-effort: never raises."""
     try:
+        # A failed capture leaves a zero-byte file behind. Archiving it poisons
+        # every future build, because the encoder stops there -- so reject it at
+        # the door rather than discovering it weeks later in a truncated clip.
+        if os.path.getsize(src_path) < MIN_FRAME_BYTES:
+            logger.warning(
+                "Not archiving %s frame: source is %d bytes, capture likely failed",
+                cam,
+                os.path.getsize(src_path),
+            )
+            return
         folder = _frames_dir(cam)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         shutil.copy(src_path, os.path.join(folder, f"{stamp}.jpg"))
@@ -161,6 +177,25 @@ def generate_timelapse(cam):
     frames = glob.glob(os.path.join(folder, "*.jpg"))
     if not frames:
         raise FileNotFoundError("no frames archived yet")
+
+    # Quarantine anything the encoder would choke on. Moved aside rather than
+    # deleted -- they are worthless as video but they are still evidence of when
+    # a camera was failing, and this runs unattended.
+    unusable = [f for f in frames if os.path.getsize(f) < MIN_FRAME_BYTES]
+    if unusable:
+        reject_dir = os.path.join(folder, "rejected")
+        os.makedirs(reject_dir, exist_ok=True)
+        for bad in unusable:
+            logger.warning(
+                "Quarantining unusable %s frame %s (%d bytes)",
+                cam,
+                os.path.basename(bad),
+                os.path.getsize(bad),
+            )
+            shutil.move(bad, os.path.join(reject_dir, os.path.basename(bad)))
+        frames = [f for f in frames if f not in set(unusable)]
+        if not frames:
+            raise FileNotFoundError("no usable frames archived yet")
     out = timelapse_path(cam)
     cmd = [
         "ffmpeg",
@@ -198,5 +233,47 @@ def generate_timelapse(cam):
             f"ffmpeg produced no video for {cam} ({size} bytes from {len(frames)} "
             f"frames); last output: {stderr[-500:] or '(none)'}"
         )
-    logger.info("Timelapse for %s assembled: %d bytes", cam, size)
+    # Size alone is not enough either: a 2-frame clip out of 225 was 66 KB and
+    # sailed past the byte check. Compare what the file actually contains with
+    # what went in. Best-effort -- a missing or unhappy ffprobe must not fail an
+    # otherwise good build.
+    encoded = _encoded_frame_count(out)
+    if encoded is not None and encoded < len(frames) * 0.9:
+        raise RuntimeError(
+            f"ffmpeg encoded only {encoded} of {len(frames)} frames for {cam}; "
+            "the archive likely contains a frame it cannot read"
+        )
+
+    logger.info(
+        "Timelapse for %s assembled: %d bytes, %s frames",
+        cam,
+        size,
+        encoded if encoded is not None else len(frames),
+    )
     return out
+
+
+def _encoded_frame_count(path):
+    """Frames actually present in ``path``, or None if ffprobe cannot say."""
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-count_frames",
+                "-show_entries",
+                "stream=nb_read_frames",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=300,
+        )
+        return int(proc.stdout.decode().strip())
+    except Exception:  # noqa: BLE001 - verification is advisory, never fatal
+        return None

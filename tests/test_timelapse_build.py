@@ -10,6 +10,7 @@ Both halves are tested here: the flag that prevents it, and the verification
 that catches it anyway if the flag is ever dropped.
 """
 
+import glob
 import os
 import tempfile
 import unittest
@@ -28,8 +29,10 @@ class TimelapseBuildTestCase(unittest.TestCase):
         # One frame is enough; ffmpeg itself is mocked.
         folder = os.path.join(self.tmp, "upper")
         os.makedirs(folder, exist_ok=True)
+        # Must exceed MIN_FRAME_BYTES or the build quarantines it as a failed
+        # capture -- which is the behaviour UnusableFrameTestCase covers.
         with open(os.path.join(folder, "20260830-120000.jpg"), "wb") as fh:
-            fh.write(b"\xff\xd8\xff\xd9")
+            fh.write(b"\xff\xd8" + b"\0" * 60_000)
 
     def _fake_run(self, size):
         """Stand in for ffmpeg, writing an output file of ``size`` bytes."""
@@ -53,13 +56,17 @@ class TimelapseBuildTestCase(unittest.TestCase):
         seen = {}
 
         def run(cmd, **kwargs):
-            seen["cmd"] = cmd
-            seen["stdin"] = kwargs.get("stdin")
-            with open(cmd[-1], "wb") as fh:
-                fh.write(b"\0" * 50_000)
+            # generate_timelapse also shells out to ffprobe to verify the
+            # result; only the encode call is under test here.
+            if cmd[0] == "ffmpeg":
+                seen["cmd"] = cmd
+                seen["stdin"] = kwargs.get("stdin")
+                with open(cmd[-1], "wb") as fh:
+                    fh.write(b"\0" * 50_000)
 
             class R:
                 stderr = b""
+                stdout = b"1"
 
             return R()
 
@@ -113,3 +120,107 @@ class TimelapseBuildTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnusableFrameTestCase(unittest.TestCase):
+    """One bad frame must not silently truncate the clip.
+
+    ffmpeg's image2 demuxer stops at the first file it cannot read and exits 0.
+    A single zero-byte capture -- archived while a tower's cameras were
+    unplugged -- cut a 225-frame timelapse down to 2, and the result was 66 KB,
+    comfortably past a size-only check.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        p = patch.object(config, "TIMELAPSE_DIR", self.tmp)
+        p.start()
+        self.addCleanup(p.stop)
+        self.folder = os.path.join(self.tmp, "upper")
+        os.makedirs(self.folder, exist_ok=True)
+
+    def _frame(self, name, size):
+        with open(os.path.join(self.folder, name), "wb") as fh:
+            fh.write(b"\xff\xd8" + b"\0" * max(0, size - 2))
+
+    def test_archive_frame_rejects_a_failed_capture(self):
+        src = os.path.join(self.tmp, "empty.jpg")
+        open(src, "wb").close()
+        camera.archive_frame(src, "upper")
+        self.assertEqual(glob.glob(os.path.join(self.folder, "*.jpg")), [])
+
+    def test_archive_frame_accepts_a_real_capture(self):
+        src = os.path.join(self.tmp, "good.jpg")
+        with open(src, "wb") as fh:
+            fh.write(b"\xff\xd8" + b"\0" * 60_000)
+        camera.archive_frame(src, "upper")
+        self.assertEqual(len(glob.glob(os.path.join(self.folder, "*.jpg"))), 1)
+
+    def test_build_quarantines_a_bad_frame_and_still_encodes(self):
+        self._frame("20260912-201506.jpg", 60_000)
+        self._frame("20260912-202028.jpg", 60_000)
+        self._frame("20260912-202547.jpg", 0)  # the poison frame
+        self._frame("20260913-121908.jpg", 60_000)
+
+        def run(cmd, **kwargs):
+            with open(cmd[-1], "wb") as fh:
+                fh.write(b"\0" * 50_000)
+
+            class R:
+                stderr = b""
+
+            return R()
+
+        with (
+            patch("subprocess.run", run),
+            patch.object(camera, "_encoded_frame_count", lambda p: 3),
+        ):
+            camera.generate_timelapse("upper")
+
+        # The bad frame is moved aside, not deleted: it is evidence of when the
+        # camera was failing.
+        self.assertEqual(len(glob.glob(os.path.join(self.folder, "*.jpg"))), 3)
+        rejected = glob.glob(os.path.join(self.folder, "rejected", "*.jpg"))
+        self.assertEqual(len(rejected), 1)
+        self.assertIn("20260912-202547", rejected[0])
+
+    def test_short_encode_raises_even_when_the_file_is_large_enough(self):
+        """The 66 KB / 2-frame case: big enough to pass a byte check, still wrong."""
+        for i in range(10):
+            self._frame(f"2026091{i}-120000.jpg", 60_000)
+
+        def run(cmd, **kwargs):
+            with open(cmd[-1], "wb") as fh:
+                fh.write(b"\0" * 66_267)
+
+            class R:
+                stderr = b""
+
+            return R()
+
+        with (
+            patch("subprocess.run", run),
+            patch.object(camera, "_encoded_frame_count", lambda p: 2),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                camera.generate_timelapse("upper")
+        self.assertIn("only 2 of 10 frames", str(ctx.exception))
+
+    def test_unverifiable_encode_is_allowed(self):
+        """ffprobe missing must not fail an otherwise good build."""
+        self._frame("20260912-201506.jpg", 60_000)
+
+        def run(cmd, **kwargs):
+            with open(cmd[-1], "wb") as fh:
+                fh.write(b"\0" * 50_000)
+
+            class R:
+                stderr = b""
+
+            return R()
+
+        with (
+            patch("subprocess.run", run),
+            patch.object(camera, "_encoded_frame_count", lambda p: None),
+        ):
+            self.assertTrue(camera.generate_timelapse("upper"))
