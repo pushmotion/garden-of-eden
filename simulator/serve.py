@@ -7,6 +7,8 @@ placeholder image so the UI renders end to end.
 """
 
 import base64
+import threading
+from datetime import datetime
 
 from simulator import _sandbox
 
@@ -44,7 +46,23 @@ _camera.capture = _fake_capture
 configure_logging()
 app = create_app()
 
+
+def _poll_simulated_water():
+    # The simulator supplies the same persisted contract as the MQTT process;
+    # the real REST API never constructs a DistanceSensor.
+    from app.lib import state
+    from app.sensors.distance.distance import Distance
+
+    sensor = Distance()
+    while True:
+        state.save_state(
+            water_airgap_cm=sensor.measure_once(), water_checked_at=datetime.now().isoformat()
+        )
+        threading.Event().wait(2)
+
+
 if __name__ == "__main__":
+    threading.Thread(target=_poll_simulated_water, daemon=True).start()
     print("Garden of Eden simulator (web + REST) on http://localhost:5000/")
     # Reloader off: single clean process, no double-init of simulated state.
     app.run(debug=True, host="0.0.0.0", port=5000, use_reloader=False)

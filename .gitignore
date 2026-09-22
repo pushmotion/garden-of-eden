@@ -22,3 +22,4 @@ timelapse/
 # long-lived access token lives in .ha_token.
 .ha_token
 *.token
+.update-pending

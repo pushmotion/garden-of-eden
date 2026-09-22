@@ -60,7 +60,7 @@ upstream `main` silently reintroduces three pump defects.
 
 ## Fleet shape
 
-Two towers, both Pi Zero W on Raspbian 13 (trixie) / Python 3.13:
+Three towers share one household. The first two are Pi Zero W; verify the third during provisioning:
 
 - **gardyn_01** — an original Gardyn Home 1. AM2320 temp/humidity, INA219 pump
   power monitor present, two USB cameras.
@@ -68,6 +68,8 @@ Two towers, both Pi Zero W on Raspbian 13 (trixie) / Python 3.13:
   code's model taxonomy**: it carries a **DHT20**, so `detect_model()` reports
   `"gardyn 3.0"`. It has **no INA219** at any address, so `/pump/stats` and the
   HA pump-power entities do not work on it.
+
+- **gardyn_03** — newly flashed, awaiting commissioning. Identity, hardware and calibration must be verified independently.
 
 Trust an I2C scan over the model on the box when provisioning a new unit.
 

@@ -25,15 +25,21 @@ GOE_PATH=$(realpath "$(dirname "$(readlink -e "${0}")")/..")
 # regardless of the caller's working directory (cron, systemd, etc.).
 export PYTHONPATH="${GOE_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
 
+# Cron appends this flag; manual CLI/API/MQTT lighting stays available.
+SCHEDULE_ARGS=()
+if [[ " ${*} " == *" --scheduled "* ]]; then
+    SCHEDULE_ARGS=(--scheduled)
+fi
+
 # Turn off the light
 turn_off_light() {
-    "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/light/light.py" --off
+    "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/light/light.py" --off "${SCHEDULE_ARGS[@]}"
 }
 
 # Turn on the light with specified brightness
 turn_on_light() {
     local brightness="$1"
-    "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/light/light.py" --on --brightness "${brightness}"
+    "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/light/light.py" --on --brightness "${brightness}" "${SCHEDULE_ARGS[@]}"
 }
 
 # Print usage information
@@ -69,7 +75,7 @@ main() {
         ramp)
             # ramp <brightness> <minutes> — sunrise/sunset gradual change.
             "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/light/light.py" \
-                --on --brightness "${2:-${BRIGHTNESS_DEFAULT}}" --ramp-minutes "${3:-0}"
+                --on --brightness "${2:-${BRIGHTNESS_DEFAULT}}" --ramp-minutes "${3:-0}" "${SCHEDULE_ARGS[@]}"
             exit 0
             ;;
         off)

@@ -3,6 +3,7 @@ from flask import Blueprint, jsonify
 import config
 from app.lib import water
 from app.lib.hardware import detect_model
+from app.lib.runtime import inventory
 
 system_blueprint = Blueprint("system", __name__)
 
@@ -25,6 +26,8 @@ def get_system():
     model = detect_model()
     return jsonify(
         {
+            **inventory(),
+            **inventory(),
             "identifier": config.IDENTIFIER,
             "version": config.VERSION,
             "model": model,

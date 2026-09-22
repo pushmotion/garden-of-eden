@@ -379,7 +379,7 @@ function setup_mqtt_service {
 [Unit]
 Description=MQTT Service
 Requires=pigpiod.service
-After=network-online.target pigpiod.service
+After=network-online.target pigpiod.service garden-boot-indicator.service
 Wants=network-online.target
 StartLimitIntervalSec=0
 
@@ -441,7 +441,8 @@ function setup_boot_indicator {
     cat > $service_file <<EOF
 [Unit]
 Description=Garden of Eden boot heartbeat (pulse lights on startup)
-After=network.target pigpiod.service mqtt.service
+After=pigpiod.service
+Before=mqtt.service
 Wants=pigpiod.service
 
 [Service]
@@ -574,6 +575,17 @@ if [ "$ASSUME_YES" != "true" ]; then
     esac
 fi
 
+# Require an operator-provided identity before installing or starting anything.
+# A fresh copy of .env-dist deliberately has no fleet identity.
+if [ ! -f "$INSTALL_DIR/.env" ] || ! grep -Eq '^MQTT_IDENTIFIER=[a-z][a-z0-9_]+$' "$INSTALL_DIR/.env"; then
+    log_error "Create .env and set this tower's unique MQTT_IDENTIFIER before running setup."
+    exit 1
+fi
+if [ -z "${GARDEN_HOSTNAME:-}" ]; then
+    log_error "Set GARDEN_HOSTNAME explicitly to this tower's unique hostname."
+    exit 1
+fi
+
 check_os_compatibility
 
 install_packages
@@ -586,6 +598,7 @@ ensure_env_file
 add_user_to_groups
 check_i2c_sensors
 add_sensor_type_to_env
+"$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/bin/preflight.py" || exit 1
 
 create_bash_script_symlinks
 install_udev_rules
@@ -595,8 +608,8 @@ setup_mdns_hostname
 #Note: pigpiod will be started by mqtt.service
 #enable_pigpiod_service
 
+setup_boot_indicator
 setup_mqtt_service
 setup_api_service
-setup_boot_indicator
 setup_autoupdate
 verify_api

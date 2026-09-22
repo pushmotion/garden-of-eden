@@ -15,7 +15,7 @@ class BuildCronLinesTestCase(unittest.TestCase):
             },
             "pump": {"enabled": False},
         }
-        lines = sched.build_cron_lines(s)
+        lines = [line for line in sched.build_cron_lines(s) if "schedule-refresh.sh" not in line]
         self.assertEqual(len(lines), 2)
         # Monday -> cron day-of-week 1; light.sh takes positional args.
         self.assertIn("30 8 * * 1 /usr/local/bin/light 60", lines[0])
@@ -38,7 +38,7 @@ class BuildCronLinesTestCase(unittest.TestCase):
                 },
             }
         }
-        lines = sched.build_cron_lines(s)
+        lines = [line for line in sched.build_cron_lines(s) if "schedule-refresh.sh" not in line]
         self.assertEqual(len(lines), 2)
         self.assertIn("0 6 * * 1 /usr/local/bin/light ramp 70 30", lines[0])
         self.assertIn("0 22 * * 1 /usr/local/bin/light ramp 0 30", lines[1])
@@ -55,7 +55,7 @@ class BuildCronLinesTestCase(unittest.TestCase):
                 },
             }
         }
-        lines = sched.build_cron_lines(s)
+        lines = [line for line in sched.build_cron_lines(s) if "schedule-refresh.sh" not in line]
         self.assertEqual(len(lines), 4)  # two windows -> two on + two off
         self.assertTrue(all(" * * 5 " in ln for ln in lines))  # all on Friday
 
@@ -64,27 +64,28 @@ class BuildCronLinesTestCase(unittest.TestCase):
             "lights": {"enabled": True, "onTime": "08:00", "offTime": "22:00", "brightness": 70},
             "pump": {"enabled": False, "runs": []},
         }
-        lines = sched.build_cron_lines(s)
+        lines = [line for line in sched.build_cron_lines(s) if "schedule-refresh.sh" not in line]
         self.assertEqual(len(lines), 14)  # 7 days x (on + off)
         dows = {ln.split()[4] for ln in lines}
         self.assertEqual(dows, {"0", "1", "2", "3", "4", "5", "6"})
 
     def test_pump_runs_convert_minutes_to_seconds_with_dow(self):
         s = {"pump": {"enabled": True, "days": {"tue": [{"time": "06:30", "duration": 3}]}}}
-        lines = sched.build_cron_lines(s)
+        lines = [line for line in sched.build_cron_lines(s) if "schedule-refresh.sh" not in line]
         self.assertEqual(len(lines), 1)
         self.assertIn("30 6 * * 2 /usr/local/bin/water 180", lines[0])
 
     def test_pump_duration_clamped_to_safety_cap(self):
         # 10 minutes requested, but the hard cap is 5 minutes (300s).
         s = {"pump": {"enabled": True, "days": {"wed": [{"time": "12:00", "duration": 10}]}}}
-        lines = sched.build_cron_lines(s)
+        lines = [line for line in sched.build_cron_lines(s) if "schedule-refresh.sh" not in line]
         self.assertEqual(len(lines), 1)
         self.assertIn(f"/usr/local/bin/water {sched.config.MAX_PUMP_RUN_SECONDS} ", lines[0])
         self.assertNotIn("water 600", lines[0])
 
     def test_disabled_emits_nothing(self):
-        self.assertEqual(sched.build_cron_lines(sched.DEFAULT_SCHEDULE), [])
+        self.assertEqual(len(sched.build_cron_lines(sched.DEFAULT_SCHEDULE)), 1)
+        self.assertIn("schedule-refresh.sh", sched.build_cron_lines(sched.DEFAULT_SCHEDULE)[0])
 
     def test_invalid_time_raises(self):
         s = {
@@ -129,7 +130,7 @@ class VacationModeTestCase(unittest.TestCase):
         lines = sched.build_cron_lines(s)
         joined = "\n".join(lines)
         self.assertIn("/usr/local/bin/light 70", joined)
-        self.assertFalse(any("schedule-refresh.sh" in ln for ln in lines))
+        self.assertTrue(any("schedule-refresh.sh" in ln for ln in lines))
 
 
 class NormalizeScheduleTestCase(unittest.TestCase):
@@ -294,7 +295,7 @@ class ScheduleEndpointTestCase(unittest.TestCase):
         body = self.client.post("/schedule/validate", json=payload).get_json()
         self.assertTrue(body["valid"])
         # 7 days x (light on + light off + one pump run)
-        self.assertEqual(body["count"], 21)
+        self.assertEqual(body["count"], 22)  # 21 actuator entries plus nightly cleanup
         self.assertTrue(any("/usr/local/bin/light 65" in ln for ln in body["cron_lines"]))
 
     def test_validate_rejects_a_bad_time(self):
@@ -348,8 +349,9 @@ class OneTimePumpRunTestCase(unittest.TestCase):
         run = sched.add_one_time_pump_run("15:00", 3, now=self.now)
         self.assertEqual(run["at"], datetime.datetime(2026, 8, 31, 15, 0))
         self.assertEqual(run["seconds"], 180)
-        self.assertEqual(len(self.crontab), 1)
-        line = self.crontab[0]
+        self.assertEqual(len(self.crontab), 2)
+        self.assertEqual(sum(sched.REFRESH_CMD in line for line in self.crontab), 1)
+        line = next(line for line in self.crontab if sched.ONCE_MARKER in line)
         self.assertTrue(line.startswith("0 15 31 8 * /usr/local/bin/water 180 "))
         self.assertIn(sched.ONCE_MARKER, line)
 
@@ -366,10 +368,12 @@ class OneTimePumpRunTestCase(unittest.TestCase):
     def test_prune_removes_only_expired_lines(self):
         sched.add_one_time_pump_run("10:00", 3, now=self.now)  # today 10:00
         sched.add_one_time_pump_run("15:00", 3, now=self.now)  # today 15:00
-        self.assertEqual(len(self.crontab), 2)
+        self.assertEqual(len(self.crontab), 3)
         sched.prune_one_time_pump_runs(now=datetime.datetime(2026, 8, 31, 11, 0))
-        self.assertEqual(len(self.crontab), 1)
-        self.assertIn("15:00", self.crontab[0])
+        self.assertEqual(len(self.crontab), 2)
+        once = [line for line in self.crontab if sched.ONCE_MARKER in line]
+        self.assertEqual(len(once), 1)
+        self.assertIn("15:00", once[0])
 
     def test_prune_never_blanks_an_unreadable_crontab(self):
         self.crontab = []
@@ -389,13 +393,14 @@ class OneTimePumpRunTestCase(unittest.TestCase):
 
     def test_one_offs_are_excluded_from_installed_recurring_lines(self):
         sched.add_one_time_pump_run("15:00", 3, now=self.now)
-        self.assertEqual(sched.installed_cron_lines(), [])
+        self.assertEqual(len(sched.installed_cron_lines()), 1)
+        self.assertIn(sched.REFRESH_CMD, sched.installed_cron_lines()[0])
 
     def test_clear_removes_pending_runs_only(self):
         self.crontab = ["0 5 * * 1 /usr/local/bin/light 65 " + sched.CRON_MARKER]
         sched.add_one_time_pump_run("15:00", 3, now=self.now)
         self.assertEqual(sched.clear_one_time_pump_runs(), 1)
-        self.assertEqual(len(self.crontab), 1)
+        self.assertEqual(len(self.crontab), 2)
         self.assertIn(sched.CRON_MARKER, self.crontab[0])
         self.assertNotIn(sched.ONCE_MARKER, self.crontab[0])
 

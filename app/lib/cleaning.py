@@ -31,10 +31,12 @@ The cutoff it re-checks against is deliberately *not* ``PUMP_CUTOFF_CM``. See
 """
 
 import logging
+import uuid
 from datetime import datetime, timedelta
 
 import config
 from app.lib import state as state_lib
+from app.lib.locking import pump_locked
 from app.lib.water import is_reading_fresh, is_water_low
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,8 @@ STARTED_KEY = "cleaning_started_at"
 SECONDS_KEY = "cleaning_seconds"
 SPEED_KEY = "cleaning_speed"
 REASON_KEY = "cleaning_last_result"
+ID_KEY = "cleaning_id"
+GENERATION_KEY = "cleaning_generation"
 
 # Why a run ended, surfaced to Home Assistant and the web UI. "Why did my clean
 # stop early?" is otherwise only answerable from the logs.
@@ -141,7 +145,7 @@ def water_verdict(state=None, now=None, cutoff=None):
     cutoff = effective_cutoff() if cutoff is None else cutoff
 
     if not cutoff:
-        return True, "no cleaning cutoff configured; dry-run protection is off"
+        return False, "no cleaning cutoff configured; configure and verify the intake depth first"
 
     checked_at = state.get("water_checked_at")
     if not is_reading_fresh(checked_at, now, config.WATER_READING_MAX_AGE_SECONDS):
@@ -189,6 +193,7 @@ def session(state=None, now=None):
         return None
 
     return {
+        "id": state.get(ID_KEY) or str(raw),
         "until": until,
         "remaining_seconds": int(remaining),
         "started_at": state.get(STARTED_KEY),
@@ -218,6 +223,7 @@ def expired(state=None, now=None):
     return session(state=state, now=now) is None
 
 
+@pump_locked
 def start(seconds=None, speed=None, now=None):
     """Record the start of a cleaning run and return the session.
 
@@ -232,17 +238,22 @@ def start(seconds=None, speed=None, now=None):
 
     now = now or datetime.now()
     until = now + timedelta(seconds=seconds)
+    session_id = uuid.uuid4().hex
     state_lib.save_state(
+        strict=True,
         **{
+            ID_KEY: session_id,
+            GENERATION_KEY: session_id,
             UNTIL_KEY: until.isoformat(timespec="seconds"),
             STARTED_KEY: now.isoformat(timespec="seconds"),
             SECONDS_KEY: seconds,
             SPEED_KEY: speed,
             REASON_KEY: None,
-        }
+        },
     )
     logger.info("Cleaning run started: %ss at %s%%, until %s", seconds, speed, until)
     return {
+        "id": session_id,
         "until": until,
         "remaining_seconds": seconds,
         "started_at": now.isoformat(timespec="seconds"),
@@ -251,16 +262,19 @@ def start(seconds=None, speed=None, now=None):
     }
 
 
+@pump_locked
 def clear(reason=DONE_STOPPED):
     """End the session. Idempotent, so every enforcing path can call it freely."""
     state_lib.save_state(
+        strict=True,
         **{
+            ID_KEY: None,
             UNTIL_KEY: None,
             STARTED_KEY: None,
             SECONDS_KEY: None,
             SPEED_KEY: None,
             REASON_KEY: reason,
-        }
+        },
     )
     logger.info("Cleaning run ended: %s", reason)
 

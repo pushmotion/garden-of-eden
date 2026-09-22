@@ -233,6 +233,7 @@ class CleaningWatchdogTestCase(unittest.TestCase):
 
     @patch.object(pump_routes, "_ensure_watchdog", lambda: None)
     def test_resume_picks_up_a_run_that_still_has_time(self):
+        self._reading(14.0)
         cleaning.start(seconds=3600)
         resumed = pump_routes.resume_cleaning_if_active()
         self.assertIsNotNone(resumed)

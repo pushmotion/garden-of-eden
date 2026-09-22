@@ -26,6 +26,7 @@ import datetime
 import json
 import logging
 import os
+import shlex
 import subprocess
 
 import config
@@ -171,13 +172,15 @@ def _vacation_cron_lines():
             on_m, on_h = _hh_mm(window["onTime"])
             off_m, off_h = _hh_mm(window["offTime"])
             brightness = int(window["brightness"])
-            lines.append(f"{on_m} {on_h} * * {dow} {LIGHT_CMD} {brightness} {CRON_MARKER}")
-            lines.append(f"{off_m} {off_h} * * {dow} {LIGHT_CMD} off {CRON_MARKER}")
+            lines.append(
+                f"{on_m} {on_h} * * {dow} {LIGHT_CMD} {brightness} --scheduled {CRON_MARKER}"
+            )
+            lines.append(f"{off_m} {off_h} * * {dow} {LIGHT_CMD} off --scheduled {CRON_MARKER}")
         for run in VACATION_PROFILE["pump"]:
             run_m, run_h = _hh_mm(run["time"])
             seconds = _pump_seconds(run["duration"])
             lines.append(f"{run_m} {run_h} * * {dow} {WATER_CMD} {seconds} {CRON_MARKER}")
-    lines.append(f"2 0 * * * {REFRESH_CMD} {CRON_MARKER}")
+    lines.append(f"2 0 * * * {shlex.quote(REFRESH_CMD)} {CRON_MARKER}")
     return lines
 
 
@@ -208,8 +211,8 @@ def build_cron_lines(schedule):
                 else:
                     on_cmd = f"{LIGHT_CMD} {brightness}"
                     off_cmd = f"{LIGHT_CMD} off"
-                lines.append(f"{on_m} {on_h} * * {dow} {on_cmd} {CRON_MARKER}")
-                lines.append(f"{off_m} {off_h} * * {dow} {off_cmd} {CRON_MARKER}")
+                lines.append(f"{on_m} {on_h} * * {dow} {on_cmd} --scheduled {CRON_MARKER}")
+                lines.append(f"{off_m} {off_h} * * {dow} {off_cmd} --scheduled {CRON_MARKER}")
 
     pump = schedule["pump"]
     if pump["enabled"]:
@@ -220,6 +223,7 @@ def build_cron_lines(schedule):
                 seconds = _pump_seconds(run.get("duration", 5))
                 lines.append(f"{run_m} {run_h} * * {dow} {WATER_CMD} {seconds} {CRON_MARKER}")
 
+    lines.append(f"2 0 * * * {shlex.quote(REFRESH_CMD)} {CRON_MARKER}")
     return lines
 
 
@@ -503,6 +507,8 @@ def add_one_time_pump_run(hhmm, duration_minutes, now=None):
         f"{WATER_CMD} {seconds} {ONCE_MARKER} {when.isoformat()}"
     )
     kept = prune_one_time_pump_runs(now=now, write=False)
+    if not any("schedule-refresh.sh" in entry for entry in kept):
+        kept.append(f"2 0 * * * {shlex.quote(REFRESH_CMD)} {CRON_MARKER}")
     _write_crontab(kept + [line])
     logger.info("Scheduled a one-time pump run at %s for %ss", when.isoformat(), seconds)
     return {"at": when, "seconds": seconds}

@@ -14,15 +14,17 @@ from time import sleep
 import paho.mqtt.client as mqtt
 from gpiozero import Button  # Import gpiozero Button
 
+import config
 from app.lib import cleaning as cleaning_lib
 from app.lib import grow as grow_lib
 from app.lib import state as state_lib
 from app.lib.hardware import current_duty_fraction, detect_model, get_pin_factory
+from app.lib.locking import file_lock, pump_locked
 from app.lib.logging_config import configure_logging
 from app.lib.water import gallons_from_state, is_water_low, pump_cutoff, tank_readings
+from app.lib.water_guard import pump_allowed
 from app.sensors.camera import camera as camera_mod
-from app.sensors.distance.distance import MeasurementError
-from app.sensors.distance.routes import distance_control
+from app.sensors.distance.distance import Distance, MeasurementError
 from app.sensors.humidity.humidity import humidity_sensor
 from app.sensors.light.routes import light_control
 from app.sensors.pcb_temp import over_temp as over_temp_lib
@@ -101,7 +103,11 @@ pin_factory = get_pin_factory()
 
 pump = pump_control
 light = light_control
-distance_sensor = distance_control
+try:
+    distance_sensor = Distance(pin_factory=get_pin_factory())
+except Exception:
+    logger.exception("Failed to initialize the MQTT-owned distance sensor")
+    distance_sensor = None
 
 # Default duty applied when something is switched on without an explicit level.
 # Sourced from config so DEFAULT_BRIGHTNESS/DEFAULT_PUMP_SPEED in .env take effect
@@ -159,8 +165,11 @@ _pump_off_timer = None
 _pump_timer_lock = threading.Lock()
 
 
+@pump_locked
 def _safety_pump_off():
     global pump_state
+    if cleaning_lib.is_active():
+        return
     logger.warning("Pump safety cap (%ss) reached; forcing pump OFF", MAX_PUMP_RUN_SECONDS)
     try:
         pump.off()
@@ -215,6 +224,7 @@ def _ensure_pump_safety_armed():
     nothing in the UI would ever say why.
     """
     if cleaning_lib.is_active():
+        _cancel_pump_safety()
         return False
     with _pump_timer_lock:
         if _pump_safety_pending_locked():
@@ -246,6 +256,7 @@ def toggle_light():
     state_lib.save_state(light_on=light_state, brightness=brightness)
 
 
+@pump_locked
 def toggle_pump():
     global pump_state
     # The pump is already running during a clean, so a double-press means "make
@@ -505,6 +516,7 @@ def publish_water_readings(client, distance):
         client.publish(BASE_TOPIC + "/water/percent", f"{readings['percent']:.0f}")
     if readings["gallons"] is not None:
         client.publish(BASE_TOPIC + "/water/gallons", f"{readings['gallons']:.1f}")
+    publish_grow_state(client)
 
 
 def water_ok_for_pump(client):
@@ -637,7 +649,7 @@ def send_discovery_messages(client):
         # find/replace of the identifier, and renaming an entity in the HA UI
         # can never move it out from under one.
         if "unique_id" in body:
-            body.setdefault("object_id", body["unique_id"])
+            body.setdefault("default_entity_id", topic.split("/")[1] + "." + body["unique_id"])
         client.publish(topic, json.dumps(body), retain=True)
 
     # Config for Light
@@ -1506,6 +1518,7 @@ def handle_cleaning_minutes(client, payload):
     publish_cleaning_state(client)
 
 
+@pump_locked
 def enforce_cleaning_deadline(client):
     """Backstop for the watchdog in the pump routes.
 
@@ -1708,6 +1721,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
         over_temp_alert.when_released = lambda: publish_over_temp_state(client)
 
 
+@pump_locked
 def on_message(client, userdata, msg):
     global brightness, speed, WATER_LOW_CM, manual_pump_time
 
@@ -1727,6 +1741,18 @@ def on_message(client, userdata, msg):
 
     try:
         # === Pump Logic ===
+        if topic_suffix in ("pump/command", "pump/speed/set") and state_lib.load_state().get(
+            cleaning_lib.UNTIL_KEY
+        ):
+            if payload.upper() == "OFF" or (topic_suffix == "pump/speed/set" and payload == "0"):
+                stop_cleaning()
+                _cancel_pump_safety()
+                publish_cleaning_state(client)
+                publish_pump_state(client)
+            else:
+                logger.warning("Ordinary pump command refused during cleaning")
+                publish_cleaning_state(client)
+            return
         if topic_suffix == "pump/command":
             if payload.upper() == "ON":
                 if not water_ok_for_pump(client):
@@ -1943,7 +1969,12 @@ def publish_water_level(client):
         if distance is not None:
             logger.info(f"Publishing Water Level: {distance:.2f}cm airgap")
             publish_water_readings(client, distance)
-        sleep(WATER_CHECK_SECONDS)
+        waited = 0
+        while waited < WATER_CHECK_SECONDS:
+            sleep(1)
+            waited += 1
+            if cleaning_lib.is_active() and waited >= max(1, config.CLEANING_TICK_SECONDS):
+                break
 
 
 def capture_and_publish_images(client):
@@ -2036,6 +2067,7 @@ def publish_images(client):
         sleep(IMAGE_INTERVAL_SECONDS)
 
 
+@pump_locked
 def restore_actuator_state(client):
     """Restore light/pump to their last persisted state after a restart (#3)."""
     global light_state, pump_state, brightness, speed
@@ -2066,7 +2098,10 @@ def restore_actuator_state(client):
             logger.info("Restored actuator state mid-clean: %s", saved)
             return
 
-        if saved.get("pump_on"):
+        if saved.get(cleaning_lib.UNTIL_KEY):
+            pump_state = False
+            return
+        if saved.get("pump_on") and pump_allowed()[0]:
             pump_state = True
             pump.set_speed(speed)
             _arm_pump_safety()
@@ -2094,8 +2129,8 @@ def reconcile_actuator_state(client):
     global light_state, pump_state, brightness, speed
     interval = ACTUATOR_POLL_SECONDS
     if not interval:
-        logger.info("Actuator polling disabled (ACTUATOR_POLL_SECONDS=0)")
-        return
+        logger.info("Using cleaning safety polling interval while ordinary polling is disabled")
+        interval = max(1, config.CLEANING_TICK_SECONDS)
 
     last = None
     last_next_run = None
@@ -2108,74 +2143,77 @@ def reconcile_actuator_state(client):
                 client.publish(BASE_TOPIC + "/schedule/pump/next", upcoming, retain=True)
                 last_next_run = upcoming
 
-            light_pct = _live_duty_percent(light)
-            pump_pct = _live_duty_percent(pump)
-
-            # The cap belongs to the pump being ON, not to whoever turned it on.
-            # cron, the REST API and a water.sh killed before its EXIT trap can
-            # all leave the pump energized with nobody holding a deadline for it.
-            #
-            # Deliberately outside the change-guard below: a *failed* auto-off
-            # leaves the duty cycle unchanged, so a check that only ran on change
-            # would never notice and the pump would run on unattended.
-            # _ensure_pump_safety_armed() will not extend a pending timer, so
-            # polling this cannot push the deadline out. A None reading (pigpio
-            # unavailable) means "unknown" and is left alone.
-            # Before arming anything: a cleaning run past its deadline, or over
-            # a tank that has dropped below the cleaning cutoff, ends here. This
-            # loop is the one thing guaranteed to keep ticking, so it is the
-            # backstop for the watchdog thread in the pump routes.
-            if enforce_cleaning_deadline(client):
+            with file_lock(config.STATE_FILE + ".pump.lock"):
+                light_pct = _live_duty_percent(light)
                 pump_pct = _live_duty_percent(pump)
-            elif cleaning_lib.is_active():
-                # Keep "Cleaning Time Left" counting down. Only while a run is
-                # active, so an idle tower publishes nothing on this topic.
-                publish_cleaning_state(client)
 
-            if pump_pct:
-                if _ensure_pump_safety_armed():
-                    logger.warning(
-                        "Pump running at %s%% with no safety cap pending "
-                        "(started outside this service); armed the %ss cap",
-                        pump_pct,
-                        MAX_PUMP_RUN_SECONDS,
+                # The cap belongs to the pump being ON, not to whoever turned it on.
+                # cron, the REST API and a water.sh killed before its EXIT trap can
+                # all leave the pump energized with nobody holding a deadline for it.
+                #
+                # Deliberately outside the change-guard below: a *failed* auto-off
+                # leaves the duty cycle unchanged, so a check that only ran on change
+                # would never notice and the pump would run on unattended.
+                # _ensure_pump_safety_armed() will not extend a pending timer, so
+                # polling this cannot push the deadline out. A None reading (pigpio
+                # unavailable) means "unknown" and is left alone.
+                # Before arming anything: a cleaning run past its deadline, or over
+                # a tank that has dropped below the cleaning cutoff, ends here. This
+                # loop is the one thing guaranteed to keep ticking, so it is the
+                # backstop for the watchdog thread in the pump routes.
+                if enforce_cleaning_deadline(client):
+                    pump_pct = _live_duty_percent(pump)
+                elif cleaning_lib.is_active():
+                    # Keep "Cleaning Time Left" counting down. Only while a run is
+                    # active, so an idle tower publishes nothing on this topic.
+                    publish_cleaning_state(client)
+
+                if pump_pct:
+                    if _ensure_pump_safety_armed():
+                        logger.warning(
+                            "Pump running at %s%% with no safety cap pending "
+                            "(started outside this service); armed the %ss cap",
+                            pump_pct,
+                            MAX_PUMP_RUN_SECONDS,
+                        )
+                elif pump_pct == 0:
+                    _cancel_pump_safety()
+
+                snapshot = (light_pct, pump_pct)
+                if None not in snapshot and snapshot != last:
+                    # Published straight from the polled percentages rather than via a
+                    # helper that re-reads the pins, so this needs nothing beyond the
+                    # topics the light/pump discovery already declares.
+                    client.publish(
+                        BASE_TOPIC + "/light/state", "ON" if light_pct > 0 else "OFF", retain=True
                     )
-            elif pump_pct == 0:
-                _cancel_pump_safety()
-
-            snapshot = (light_pct, pump_pct)
-            if None not in snapshot and snapshot != last:
-                # Published straight from the polled percentages rather than via a
-                # helper that re-reads the pins, so this needs nothing beyond the
-                # topics the light/pump discovery already declares.
-                client.publish(
-                    BASE_TOPIC + "/light/state", "ON" if light_pct > 0 else "OFF", retain=True
-                )
-                client.publish(BASE_TOPIC + "/light/brightness/state", str(light_pct), retain=True)
-                client.publish(
-                    BASE_TOPIC + "/pump/state", "ON" if pump_pct > 0 else "OFF", retain=True
-                )
-                client.publish(BASE_TOPIC + "/pump/speed/state", str(pump_pct), retain=True)
-                logger.info(
-                    "Actuator state: light %s at %s%%, pump %s at %s%%",
-                    "ON" if light_pct > 0 else "OFF",
-                    light_pct,
-                    "ON" if pump_pct > 0 else "OFF",
-                    pump_pct,
-                )
-                light_state = light_pct > 0
-                pump_state = pump_pct > 0
-                if light_pct > 0:
-                    brightness = light_pct
-                if pump_pct > 0:
-                    speed = pump_pct
-                state_lib.save_state(
-                    light_on=light_state,
-                    brightness=brightness,
-                    pump_on=pump_state,
-                    speed=speed,
-                )
-                last = snapshot
+                    client.publish(
+                        BASE_TOPIC + "/light/brightness/state", str(light_pct), retain=True
+                    )
+                    client.publish(
+                        BASE_TOPIC + "/pump/state", "ON" if pump_pct > 0 else "OFF", retain=True
+                    )
+                    client.publish(BASE_TOPIC + "/pump/speed/state", str(pump_pct), retain=True)
+                    logger.info(
+                        "Actuator state: light %s at %s%%, pump %s at %s%%",
+                        "ON" if light_pct > 0 else "OFF",
+                        light_pct,
+                        "ON" if pump_pct > 0 else "OFF",
+                        pump_pct,
+                    )
+                    light_state = light_pct > 0
+                    pump_state = pump_pct > 0
+                    if light_pct > 0:
+                        brightness = light_pct
+                    if pump_pct > 0 and not cleaning_lib.is_active():
+                        speed = pump_pct
+                    state_lib.save_state(
+                        light_on=light_state,
+                        brightness=brightness,
+                        pump_on=pump_state,
+                        speed=speed,
+                    )
+                    last = snapshot
         except Exception:
             logger.exception("Error reconciling actuator state")
         sleep(interval)
@@ -2191,6 +2229,7 @@ def _live_duty_percent(driver):
     return None if fraction is None else int(round(fraction * 100))
 
 
+@pump_locked
 def apply_scheduled_state(client):
     """Bring the light in line with what the schedule says should be on now.
 
@@ -2207,6 +2246,8 @@ def apply_scheduled_state(client):
     each time, whereas a missed run self-heals at the next scheduled one.
     """
     global light_state, brightness
+    if cleaning_lib.is_active():
+        return
     try:
         schedule = sched_lib.load_schedule()
         expected = sched_lib.expected_light_state(schedule)
@@ -2245,6 +2286,7 @@ def publish_grow_reminders(client):
     """Publish grow stage and any due reminders (thinning/root/harvest/nutrient)."""
     while True:
         try:
+            publish_grow_state(client)
             grow_state = grow_lib.load_state()
             client.publish(BASE_TOPIC + "/grow/stage", grow_state.get("stage", ""), retain=True)
             day = grow_lib._days_since(grow_state.get("started"), datetime.now())
@@ -2334,7 +2376,6 @@ if __name__ == "__main__":
 
     actuator_thread = threading.Thread(target=reconcile_actuator_state, args=(client,))
     actuator_thread.daemon = True
-    actuator_thread.start()
 
     # Restore last known actuator state after (re)connect, then let the schedule
     # override it -- cron-driven changes never reach the persisted state, so the
@@ -2343,6 +2384,7 @@ if __name__ == "__main__":
         on_connect(c, u, f, rc, properties),
         restore_actuator_state(c),
         apply_scheduled_state(c),
+        actuator_thread.start() if actuator_thread.ident is None else None,
     )
 
     client.loop_forever()

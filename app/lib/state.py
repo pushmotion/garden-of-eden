@@ -7,6 +7,7 @@ import json
 import logging
 
 import config
+from app.lib.locking import file_lock
 from app.lib.persist import write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -43,12 +44,16 @@ def load_state():
         return dict(DEFAULT_STATE)
 
 
-def save_state(**changes):
+def save_state(*, strict=False, **changes):
     """Merge ``changes`` into the persisted state and write it back."""
-    state = load_state()
-    state.update(changes)
     try:
-        write_json_atomic(config.STATE_FILE, state)
+        with file_lock(config.STATE_FILE + ".lock"):
+            state = load_state()
+            state.update(changes)
+            write_json_atomic(config.STATE_FILE, state)
+            return state
     except OSError as exc:
         logger.error("Failed to persist actuator state: %s", exc)
-    return state
+        if strict:
+            raise
+    return load_state()
