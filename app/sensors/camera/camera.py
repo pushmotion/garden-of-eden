@@ -95,6 +95,70 @@ MIN_VIDEO_BYTES = 1024
 MIN_FRAME_BYTES = 1024
 
 
+def frame_mean_luma(path):
+    """Mean luminance of a frame, 0-255, or None if it cannot be determined.
+
+    Scaling an image to a single pixel *is* its mean, so this is one cheap
+    ffmpeg call rather than an image library -- and ffmpeg is already a hard
+    dependency of the timelapse path.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                path,
+                "-vf",
+                "scale=1:1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-",
+            ],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+        return proc.stdout[0] if proc.stdout else None
+    except Exception:  # noqa: BLE001 - brightness is advisory, never fatal
+        return None
+
+
+def is_too_dark(path):
+    """True when a frame is lights-off black and not worth keeping.
+
+    Fails *open*: a frame whose brightness cannot be measured is kept. Dropping
+    a good frame is worse than keeping a dark one, and this runs unattended.
+    """
+    if not config.TIMELAPSE_MIN_LUMA:
+        return False
+    luma = frame_mean_luma(path)
+    return luma is not None and luma < config.TIMELAPSE_MIN_LUMA
+
+
+def prune_dark_frames(cam):
+    """Quarantine already-archived dark frames. Returns how many were moved.
+
+    For archives captured before the brightness check existed; ordinary captures
+    are filtered at archive time so the weekly build stays fast.
+    """
+    folder = _frames_dir(cam)
+    reject_dir = os.path.join(folder, "rejected")
+    moved = 0
+    for frame in sorted(glob.glob(os.path.join(folder, "*.jpg"))):
+        if not is_too_dark(frame):
+            continue
+        os.makedirs(reject_dir, exist_ok=True)
+        shutil.move(frame, os.path.join(reject_dir, os.path.basename(frame)))
+        moved += 1
+    if moved:
+        logger.info("Quarantined %d dark %s frames", moved, cam)
+    return moved
+
+
 def has_video(cam):
     """True when an assembled clip exists *and* is more than an empty container.
 
@@ -120,6 +184,12 @@ def archive_frame(src_path, cam):
                 cam,
                 os.path.getsize(src_path),
             )
+            return
+        # Captures run hourly around the clock; the lights-off ones are black
+        # and only dilute the timelapse. Cheaper to reject here than to decode
+        # the whole archive at build time.
+        if is_too_dark(src_path):
+            logger.info("Not archiving %s frame: too dark (lights off)", cam)
             return
         folder = _frames_dir(cam)
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")

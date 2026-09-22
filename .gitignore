@@ -23,3 +23,7 @@ timelapse/
 .ha_token
 *.token
 .update-pending
+
+# Rotated logs: *.log above does not match mqtt.log.1 / gardyn.log.2.gz,
+# and an 11k-line rotated log was committed once because of that gap.
+*.log.*
