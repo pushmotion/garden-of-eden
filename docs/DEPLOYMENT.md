@@ -649,6 +649,38 @@ For reference, the tower is nowhere near trouble: SoC peaked at 57.8 C over
 three days, `vcgencmd get_throttled` reads `0x0` (never, sticky since boot), and
 the ARM clock stays at its full 1000 MHz.
 
+**These figures are from a Raspberry Pi Zero W** (`9000c1`, BCM2835). Raspberry
+Pi publishes no ambient range for that board -- its product page lists none, and
+staff give 0-50 C as the consumer-indoor design spec; the Zero 2 W product brief
+states -20 C to +70 C. The one documented hard number is the **85 C** SoC
+throttle, which Raspberry Pi's cooling whitepaper pairs with "no harm can come to
+the device if it throttles".
+
+> **Re-measure after a Zero 2 W swap.** See [pizero2-upgrade.md](pizero2-upgrade.md).
+> The 8-14 C SoC-to-PCB offset above is specific to this board; a quad-core Zero 2
+> runs hotter and will shift both that offset and the enclosure's steady state, so
+> 65/58 stops being a measured number and becomes an inherited guess.
+
+### Where the numbers came from
+
+The raw survey is still on the tower at `~/pcb-thermal-survey/` -- `survey.csv`
+(2060 samples at 2-minute intervals, 1-4 September 2026), `sample.sh` which
+collected it through the REST API, and `analyze.py` which produced the table
+above. Re-run the analysis with:
+
+```bash
+ssh -i ~/.ssh/gardyn_pi firothical@192.168.2.238 'python3 ~/pcb-thermal-survey/analyze.py'
+```
+
+To take a fresh survey -- after a Pi swap, an enclosure change, or a hot
+season -- re-add the sampler to cron. **Do not mark it `# garden-of-eden`**:
+`apply_schedule()` rewrites every line carrying that marker, so a marked line
+vanishes on the next schedule edit. Foreign lines are preserved.
+
+```bash
+( crontab -l; echo "*/2 * * * * $HOME/pcb-thermal-survey/sample.sh >/dev/null 2>&1" ) | crontab -
+```
+
 ### Do not use 36 / 34
 
 Those were the shipped defaults, and they fall *between* the lights-off idle and
