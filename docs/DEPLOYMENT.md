@@ -104,7 +104,7 @@ Calibrated values for this unit:
 | `WATER_FULL_CM` | 4.81 | airgap at the fill line |
 | `WATER_LOW_CM` | 9.1 | **alert** ≈ 13.95 cm depth ≈ 5.5" ≈ 76% remaining |
 | `PUMP_CUTOFF_CM` | 12.9 | **interlock** ≈ 10.15 cm depth ≈ **4.0"** ≈ 56% remaining |
-| `TANK_CAPACITY_GALLONS` | 5 | **unverified** — upstream default, see Open items |
+| `TANK_CAPACITY_GALLONS` | 5 | **should be 6.0** — measured 2026-09-21, see [RESERVOIR-STANDARD.md](RESERVOIR-STANDARD.md) |
 
 Usable depth is therefore ~18.2 cm (7.2").
 
@@ -690,9 +690,10 @@ unpowered or disconnected chip reads as "fine" rather than failing loud.
       All. This also fixed a second symptom: because the MQTT handlers never
       updated `light_state`/`pump_state`, turning the light on from HA left the
       next button press turning it *on again* rather than off.
-- [ ] **`TANK_CAPACITY_GALLONS=5` is unverified** — upstream's default, not
-      measured for this tower. Only affects the Water Gallons entity; depth and
-      percentage are unaffected.
+- [x] ~~**`TANK_CAPACITY_GALLONS=5` is unverified**~~ — measured 2026-09-21:
+      the reservoir holds **6.0 gallons** to the moulded fill line, so the
+      shipped 5 understates it by 20%. Still to apply on this tower. See
+      [RESERVOIR-STANDARD.md](RESERVOIR-STANDARD.md).
 - [ ] **The pump ON path has never been exercised under test.** Every other path
       is verified; this one energizes the motor and was left for a physical check.
       The *refusal* path is verified — see "How watering is guarded" — but that
