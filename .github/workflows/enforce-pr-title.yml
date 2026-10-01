@@ -21,5 +21,10 @@ jobs:
           # disallowed_prefixes: 'feat/,hotfix' # title should not start with the given prefix
           prefix_case_sensitive: false # title prefix are case insensitive
           min_length: 5 # Min length of the title
-          max_length: 50 # Max length of the title
+          # 72, not git's customary 50. That 50 is guidance for a bare subject
+          # line; a Conventional Commit spends part of its budget before the
+          # description starts -- "feat(camera): " is already 14 -- so 50 left
+          # 36 for the actual summary and rejected honest titles. 72 is the
+          # other common git wrap point and keeps `git log --oneline` readable.
+          max_length: 72 # Max length of the title
           github_token: ${{ secrets.GITHUB_TOKEN }}
