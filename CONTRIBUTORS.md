@@ -37,9 +37,10 @@ used here, inherited from the action's example config) while rejecting `perf`,
 `build`, `chore`, `style` and `refactor` — all of which this file documented as
 valid and the history actually uses.
 
-PR titles are also capped at **50 characters**, which a Conventional Commit with
-a scope reaches quickly: `feat(camera): ` alone is 14. Put the detail in the
-body rather than the title.
+PR titles are also capped at **72 characters** — git's customary 50 is guidance
+for a bare subject line, and a Conventional Commit spends part of the budget
+before the description starts (`feat(camera): ` is already 14). Still put the
+reasoning in the body; the title is a summary, not an explanation.
 
 ### Scope (optional)
 
