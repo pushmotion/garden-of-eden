@@ -138,4 +138,6 @@ All config flows through `config.py`, which reads `.env` (copy from `.env-dist`)
 
 ## Commit conventions
 
-Conventional Commits are enforced by project norms (see `CONTRIBUTORS.md`): `<type>(<scope>): <description>` where type ∈ `feat|fix|docs|style|refactor|test|chore`, `!` for breaking changes with a `BREAKING CHANGE:` footer.
+Conventional Commits are enforced by project norms (see `CONTRIBUTORS.md`): `<type>(<scope>): <description>` where type ∈ `feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`, `!` for breaking changes with a `BREAKING CHANGE:` footer.
+
+**PR titles are checked by CI** (`.github/workflows/enforce-pr-title.yml`): same type list, and a **50-character cap** that `feat(camera): ` already spends 14 of. Keep that workflow's `allowed_prefixes` in step with the list above — they drifted apart once, so CI rejected `perf`/`chore`/`refactor` while accepting `jira` and `proj-`, which this project has never used.

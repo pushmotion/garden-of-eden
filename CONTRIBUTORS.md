@@ -23,8 +23,23 @@ The `<type>` should be one of the following:
 - `docs`: Documentation updates.
 - `style`: Changes that do not affect code (e.g., formatting, white-space, etc.).
 - `refactor`: Code changes that neither fix a bug nor add a feature.
+- `perf`: A change that improves performance.
 - `test`: Adding or modifying tests.
-- `chore`: Changes to the build process, tooling, etc.
+- `build`: Changes to the build system or dependencies.
+- `ci`: Changes to CI configuration or workflows.
+- `chore`: Other changes that do not modify source or tests.
+- `revert`: Reverts a previous commit.
+
+**This list is enforced on pull request titles** by
+`.github/workflows/enforce-pr-title.yml`, which must be kept in step with it.
+The two drifted for a long time: CI allowed `jira`, `proj-` and `hotfix` (never
+used here, inherited from the action's example config) while rejecting `perf`,
+`build`, `chore`, `style` and `refactor` — all of which this file documented as
+valid and the history actually uses.
+
+PR titles are also capped at **50 characters**, which a Conventional Commit with
+a scope reaches quickly: `feat(camera): ` alone is 14. Put the detail in the
+body rather than the title.
 
 ### Scope (optional)
 
