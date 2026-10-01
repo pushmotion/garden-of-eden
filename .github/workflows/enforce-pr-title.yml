@@ -12,8 +12,12 @@ jobs:
       - name: Check PR title
         uses: deepakputhraya/action-pr-title@v1.0.2
         with:
-          # regex: '^\[PROJ-\d+\] .+' # Example regex for title format
-          allowed_prefixes: 'feat,fix,hotfix,jira,doc,test,proj-,ci' # title should start with the given prefix
+          # The Conventional Commit types documented in CONTRIBUTORS.md. Keep
+          # the two in step: this list previously allowed 'jira', 'proj-' and
+          # 'hotfix' (left over from the action's example config and never used
+          # here) while rejecting 'perf', 'build', 'chore', 'style' and
+          # 'refactor', which CONTRIBUTORS.md documents and the history uses.
+          allowed_prefixes: 'feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert'
           # disallowed_prefixes: 'feat/,hotfix' # title should not start with the given prefix
           prefix_case_sensitive: false # title prefix are case insensitive
           min_length: 5 # Min length of the title

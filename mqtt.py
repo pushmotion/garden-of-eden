@@ -60,6 +60,7 @@ from config import (
     PASSWORD,
     PORT,
     PUMP_CUTOFF_CM,
+    SUGGESTED_AREA,
     TANK_CAPACITY_GALLONS,
     UPPER_CAMERA_DEVICE,
     UPPER_IMAGE_PATH,
@@ -628,6 +629,12 @@ def send_discovery_messages(client):
         "model": detect_model() or MODEL,
         "sw_version": VERSION,
     }
+    # Put the tower in an area. Without this HA registers the device and leaves
+    # it unassigned, which is invisible on a single tower and obvious on three.
+    # Omitted entirely when unset rather than sent empty, so a blank value means
+    # "leave HA's area handling alone" instead of "no area".
+    if SUGGESTED_AREA:
+        device_info["suggested_area"] = SUGGESTED_AREA
 
     # Every entity shares the device availability topic so HA greys the whole
     # device out when the Pi/service is down.

@@ -51,6 +51,19 @@ MODEL = os.getenv("MQTT_DEVICE_MODEL", "gardyn 3.0")
 # Override only to keep an existing single-tower deployment on its old topics.
 BASE_TOPIC = os.getenv("MQTT_BASETOPIC", IDENTIFIER)
 
+# Home Assistant area for this tower, sent in the discovery device block as
+# "suggested_area". Without it HA registers the device but leaves it in no area,
+# so a multi-tower install ends up with three devices and nowhere to put them.
+#
+# Derived per unit from the identifier -- "gardyn_02" becomes "Gardyn 02" -- so
+# each tower lands in its own area without any per-unit configuration. Override
+# to group towers differently (for example a shared "Grow Room"); set it empty
+# to send nothing at all.
+#
+# HA only applies this while a device is *not already* in an area: it will never
+# move one you have placed by hand.
+SUGGESTED_AREA = os.getenv("MQTT_SUGGESTED_AREA", IDENTIFIER.replace("_", " ").title())
+
 USERNAME = os.getenv("MQTT_USERNAME")
 PASSWORD = os.getenv("MQTT_PASSWORD")
 

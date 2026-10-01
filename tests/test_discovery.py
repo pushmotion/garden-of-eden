@@ -7,6 +7,9 @@ entity is announced with a sane config payload.
 
 import json
 import unittest
+from unittest.mock import patch
+
+import config
 
 
 class FakeClient:
@@ -111,3 +114,51 @@ class DiscoveryTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SuggestedAreaTestCase(unittest.TestCase):
+    """Every device must carry an area, or HA leaves it unassigned.
+
+    Invisible on a single tower; on three it means three devices sitting in no
+    area at all, which is what was reported.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import mqtt
+
+        cls.mqtt = mqtt
+
+    def _device_blocks(self):
+        client = FakeClient()
+        self.mqtt.send_discovery_messages(client)
+        blocks = []
+        for _, payload in client.published:
+            device = json.loads(payload).get("device")
+            if device:
+                blocks.append(device)
+        return blocks
+
+    def test_every_entity_carries_a_suggested_area(self):
+        blocks = self._device_blocks()
+        self.assertTrue(blocks, "expected discovery payloads with a device block")
+        missing = [b for b in blocks if not b.get("suggested_area")]
+        self.assertEqual([], missing, "device blocks without suggested_area")
+
+    def test_the_area_defaults_to_the_tower_identifier(self):
+        """gardyn_02 -> "Gardyn 02", so each tower lands in its own area with
+        no per-unit configuration."""
+        self.assertEqual("Gardyn 02", "gardyn_02".replace("_", " ").title())
+        for block in self._device_blocks():
+            self.assertEqual(config.SUGGESTED_AREA, block["suggested_area"])
+
+    def test_an_empty_area_is_omitted_rather_than_sent_blank(self):
+        """Blank means "leave HA's area handling alone", not "no area"."""
+        with patch.object(config, "SUGGESTED_AREA", ""):
+            with patch.object(self.mqtt, "SUGGESTED_AREA", ""):
+                client = FakeClient()
+                self.mqtt.send_discovery_messages(client)
+                for _, payload in client.published:
+                    device = json.loads(payload).get("device")
+                    if device:
+                        self.assertNotIn("suggested_area", device)
