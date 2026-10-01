@@ -423,7 +423,80 @@ def evaluate_water_low(client):
         _water_low_streak,
     )
     record_water_reading(distance)
+    publish_watering_blocked(client, distance)
     return distance
+
+
+def _pump_is_circulating():
+    """True while the pump is running, by duty cycle or a cleaning session.
+
+    Errors read as "not running", which only means a reading gets published.
+    """
+    try:
+        return bool(_live_duty_percent(pump)) or cleaning_lib.is_active()
+    except Exception:
+        return False
+
+
+def publish_watering_blocked(client, distance):
+    """Report whether the dry-run guard would refuse a watering run right now.
+
+    Before this, a refusal had no entity of its own. "Water Low" is an early
+    warning by design, so it sits on for days while the pump keeps working, and
+    when the cutoff finally bit, Home Assistant showed nothing new: tower 1
+    skipped six runs in a row behind an alert that had looked the same all week.
+
+    Not debounced, because it mirrors the exact verdict ``bin/water.sh`` acts on
+    (``pump_blocked`` in the state file). Held while the pump runs: a run lifts
+    ~0.45 gal up the tower, so the level drops past the cutoff mid-run on a tank
+    that will be fine once it drains back -- and the guard is only consulted
+    before a run starts, never during one.
+    """
+    if _pump_is_circulating():
+        return
+    blocked = is_water_low(distance, effective_pump_cutoff())
+    client.publish(
+        BASE_TOPIC + "/water/pump_blocked/state", "ON" if blocked else "OFF", retain=True
+    )
+
+
+def publish_watering_skipped(client, state=None):
+    """Publish when the dry-run guard last refused a watering run, and why.
+
+    Returns the timestamp it published (None if no run has ever been refused),
+    so the reconcile loop can tell a new refusal from one it already reported.
+    """
+    state = state_lib.load_state() if state is None else state
+    refused_at = state.get("watering_refused_at")
+    if refused_at:
+        client.publish(BASE_TOPIC + "/water/skipped/last", refused_at, retain=True)
+        client.publish(
+            BASE_TOPIC + "/water/skipped/attributes",
+            json.dumps({"reason": state.get("watering_refused_reason") or ""}),
+            retain=True,
+        )
+    return refused_at
+
+
+def sync_watering_skipped(client, last_seen):
+    """Announce a watering run refused since the last pass. Returns the new mark.
+
+    ``bin/water.sh`` runs from cron and holds no MQTT client, and cron discards
+    its output, so a refusal reaches this service only through the state file.
+    This is the same publish-on-change the reconcile loop does for the cleaning
+    run and the actuator duty cycles, for the same reason.
+    """
+    state = state_lib.load_state()
+    refused_at = state.get("watering_refused_at")
+    if not refused_at or refused_at == last_seen:
+        return last_seen
+    logger.warning(
+        "Watering run refused at %s: %s",
+        refused_at,
+        state.get("watering_refused_reason") or "no reason recorded",
+    )
+    publish_watering_skipped(client, state)
+    return refused_at
 
 
 def effective_pump_cutoff():
@@ -865,6 +938,37 @@ def send_discovery_messages(client):
         "device_class": "problem",
         "payload_on": "ON",
         "payload_off": "OFF",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # "Water Low" warns early and stays on for days while the pump still works.
+    # This is the one that means scheduled watering is actually being refused.
+    TEMP_CONFIG_TOPIC = f"homeassistant/binary_sensor/gardyn/{IDENTIFIER}_watering_blocked/config"
+    temp_config_payload = {
+        "name": "Watering Blocked",
+        "unique_id": IDENTIFIER + "_watering_blocked",
+        "platform": "mqtt",
+        "state_topic": BASE_TOPIC + "/water/pump_blocked/state",
+        "device_class": "problem",
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:water-off",
+        "device": device_info,
+    }
+    pub(TEMP_CONFIG_TOPIC, temp_config_payload)
+
+    # Changes each time the dry-run guard refuses a run, so an HA automation can
+    # trigger on it ("a scheduled watering was skipped") rather than on a level.
+    TEMP_CONFIG_TOPIC = f"homeassistant/sensor/gardyn/{IDENTIFIER}_watering_skipped/config"
+    temp_config_payload = {
+        "name": "Last Skipped Watering",
+        "unique_id": IDENTIFIER + "_watering_skipped",
+        "platform": "mqtt",
+        "state_topic": BASE_TOPIC + "/water/skipped/last",
+        "json_attributes_topic": BASE_TOPIC + "/water/skipped/attributes",
+        "device_class": "timestamp",
+        "icon": "mdi:water-remove",
         "device": device_info,
     }
     pub(TEMP_CONFIG_TOPIC, temp_config_payload)
@@ -1734,6 +1838,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
     # Publish a fresh low-water state on every connect so a stale retained "ON"
     # (e.g. from before a restart) clears immediately instead of lingering.
     update_water_low_state(client)
+    publish_watering_skipped(client)
     publish_over_temp_state(client)
     publish_grow_state(client)
     publish_schedule_state(client)
@@ -2173,8 +2278,12 @@ def reconcile_actuator_state(client):
     # can announce it. Remembering the previous state lets this loop publish the
     # ON->OFF edge on their behalf.
     last_cleaning = cleaning_lib.is_active()
+    # Seeded from the file so a restart does not re-announce an old refusal;
+    # on_connect has already published it.
+    last_skipped = state_lib.load_state().get("watering_refused_at")
     while True:
         try:
+            last_skipped = sync_watering_skipped(client, last_skipped)
             # The next-run sensor has to advance once a run has passed. It changes
             # only a handful of times a day, so publish it only when it moves.
             upcoming = _next_pump_payload()

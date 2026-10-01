@@ -2,9 +2,9 @@
 #
 # One of two examples in this folder:
 #   pm-example.yaml        -- this file: grouped sections, status-first, and the
-#                             only one covering all 47 discovered entities
+#                             only one covering all 49 discovered entities
 #   lovelace-example.yaml  -- plain single-column card list (upstream style),
-#                             a 24-entity SUBSET; see its header for what it omits
+#                             a 25-entity SUBSET; see its header for what it omits
 #
 # Prefer this file unless you specifically want the shorter starting point.
 #
@@ -33,8 +33,11 @@ views:
     # The few things worth seeing before you scroll.
     badges:
       - type: entity
-        entity: binary_sensor.gardyn_01_water_low
+        entity: binary_sensor.gardyn_01_watering_blocked
         color: red
+      - type: entity
+        entity: binary_sensor.gardyn_01_water_low
+        color: amber
       - type: entity
         entity: sensor.gardyn_01_water_percent
       - type: entity
@@ -81,11 +84,25 @@ views:
             heading_style: subtitle
             icon: mdi:water
 
+          # "Water Low" is the early warning and can sit on for days while the
+          # pump still works. "Watering Blocked" is the one that means scheduled
+          # runs are being refused -- top up now.
+          - type: tile
+            entity: binary_sensor.gardyn_01_watering_blocked
+            name: Watering Blocked
+            icon: mdi:water-off
+            color: red
+
           - type: tile
             entity: binary_sensor.gardyn_01_water_low
             name: Water Low
             icon: mdi:water-alert
-            color: red
+            color: amber
+
+          - type: tile
+            entity: sensor.gardyn_01_watering_skipped
+            name: Last Skipped Watering
+            icon: mdi:water-remove
 
           - type: gauge
             entity: sensor.gardyn_01_water_percent
