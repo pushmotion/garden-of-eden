@@ -14,7 +14,7 @@ Generate views using each tower's actual `MQTT_IDENTIFIER`:
 python bin/ha-dashboard.py <identifier-1> <identifier-2> <identifier-3> --output fleet-dashboard.yaml
 ```
 
-The generator runs off-Pi, requires no HA credentials and includes all 47 discovery
+The generator runs off-Pi, requires no HA credentials and includes all 49 discovery
 entities per tower. Create a new HA dashboard and import the generated YAML in
 its raw configuration editor. Back up an existing dashboard before editing it;
 replacing its raw configuration replaces all its views. Verify entity IDs against

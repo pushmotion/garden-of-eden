@@ -55,6 +55,28 @@ def pump_allowed(state=None, now=None):
     )
 
 
+def record_refusal(reason, now=None):
+    """Persist that a watering run was just refused, for the MQTT service.
+
+    cron discards this script's output (the Pi has no MTA), so before this a
+    refused run left no trace anywhere: a tower went 22 hours without water
+    while Home Assistant showed only the low-water alert that had been on all
+    week. The service watches ``watering_refused_at`` and turns a change into a
+    log line and a "Last Skipped Watering" timestamp.
+
+    Offset-aware, because Home Assistant's timestamp sensors reject naive times.
+    Best effort: failing to record a refusal must not change the verdict.
+    """
+    now = now or datetime.now().astimezone()
+    try:
+        state_lib.save_state(
+            watering_refused_at=now.isoformat(timespec="seconds"),
+            watering_refused_reason=reason,
+        )
+    except Exception:  # noqa: BLE001 - recording is secondary to the verdict
+        logger.exception("Could not record the refused watering run")
+
+
 def main(argv=None):
     # A backstop, not decoration. Every branch inside pump_allowed() fails open
     # deliberately, so an *unhandled* exception escaping to here would be the
@@ -68,6 +90,8 @@ def main(argv=None):
         return ALLOW
     stream = sys.stdout if allowed else sys.stderr
     print(reason, file=stream)
+    if not allowed:
+        record_refusal(reason)
     return ALLOW if allowed else REFUSE
 
 

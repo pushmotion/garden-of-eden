@@ -512,6 +512,31 @@ genuinely below the cutoff. Worth re-running after any change to
 silent — a guard that refuses when it should allow looks identical to a guard
 working correctly until the plants dry out.
 
+### Seeing a refused run
+
+A refusal used to be silent. cron emails a job's output and the Pi has no
+MTA, so `water.sh`'s "refusing to water" was discarded. On 2026-09-30 tower 1
+skipped six runs in a row (about 22 hours dry) with nothing in `mqtt.log`
+and nothing new in Home Assistant. A refused run now shows up in three places:
+
+- **The journal.** `water.sh` logs every run, verdict and refusal under the tag
+  `garden-water`: `journalctl -t garden-water --since today`.
+- **`mqtt.log`**: a `WARNING Watering run refused at …` line, written once per
+  refusal. The guard records `watering_refused_at` in the state file and the
+  reconcile loop picks it up.
+- **Home Assistant**, through two entities:
+  - **Watering Blocked** (`binary_sensor.<id>_watering_blocked`, `problem`)
+    is ON while the guard *would* refuse a run. It reads the same verdict
+    `water.sh` acts on and is not debounced. It holds its value while the pump
+    runs, because a run pulls the level past the cutoff on a tank that will be
+    fine once the water drains back.
+  - **Last Skipped Watering** (`sensor.<id>_watering_skipped`, `timestamp`,
+    with a `reason` attribute) changes on every refusal. Trigger an automation
+    on its state change to get "a scheduled watering was skipped".
+
+"Water Low" is not the same signal. It is the early warning, and it can stay
+on for days while watering continues normally.
+
 ## Cleaning mode
 
 Cleaning Mode is for an **empty tower with no plants**, before or between grows.

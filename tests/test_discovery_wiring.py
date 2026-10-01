@@ -60,6 +60,9 @@ STATE_TOPICS_NOT_DRIVEN_HERE = {
     "water/percent": "published by publish_water_readings()",
     "water/gallons": "published by publish_water_readings()",
     "water/low/state": "published by evaluate_water_low() after a sensor read",
+    # Both covered directly in test_watering_visibility.py.
+    "water/pump_blocked/state": "published by evaluate_water_low() after a sensor read",
+    "water/skipped/last": "published only once bin/water.sh has refused a run",
     "grow/food": "published by the grow reminder thread",
 }
 

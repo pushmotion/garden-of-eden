@@ -2,11 +2,11 @@
 #
 # A plain single-column card list, kept as the simplest possible starting point.
 #
-# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 24 of the 47 entities
+# THIS IS A SUBSET, NOT AN ALTERNATIVE STYLE. It shows 25 of the 49 entities
 # mqtt.py discovers. If you want the whole device, use pm-example.yaml in this
 # folder; it is the dashboard these towers actually run.
 #
-# Not shown here (23 of the 47), by group:
+# Not shown here (24 of the 49), by group:
 #
 #   one-time pump runs   button.<id>_pump_run_once
 #                        time.<id>_sched_pump_manual_time
@@ -22,6 +22,7 @@
 #   derived water        sensor.<id>_water_depth
 #                        sensor.<id>_water_gallons
 #                        sensor.<id>_water_low_mode
+#                        sensor.<id>_watering_skipped
 #   forced refresh       button.<id>_refresh_all
 #                        sensor.<id>_refresh_status
 #                        sensor.<id>_refresh_last
@@ -74,6 +75,8 @@ views:
             name: Distance to Water
           - entity: binary_sensor.gardyn_01_water_low
             name: Water Low
+          - entity: binary_sensor.gardyn_01_watering_blocked
+            name: Watering Blocked
 
       - type: entities
         title: Grow Cycle
