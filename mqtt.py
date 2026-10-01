@@ -1549,6 +1549,32 @@ def enforce_cleaning_deadline(client):
     return False
 
 
+def sync_cleaning_state(client, was_active):
+    """Keep Home Assistant's cleaning entities in step. Returns the new state.
+
+    Pulled out of the reconcile loop so the ON->OFF edge is testable: that loop
+    is a ``while True``, and the edge is exactly what used to be missed.
+
+    A cleaning run is usually ended by something holding no MQTT client -- the
+    watchdog thread in the pump routes, ``POST /pump/clean/stop``, ``POST
+    /pump/off``, or the physical button. Each stops the pump and clears the
+    session, and none can announce it. Publishing only *while* a run was active
+    therefore left the retained "ON" standing: the pump stopped on time and the
+    Home Assistant switch sat on forever.
+    """
+    now_active = cleaning_lib.is_active()
+    if enforce_cleaning_deadline(client):
+        # It ended the run and published the stop itself.
+        return False
+    if now_active:
+        # Live countdown for "Cleaning Time Left".
+        publish_cleaning_state(client)
+    elif was_active:
+        logger.info("Cleaning run ended outside this service; publishing OFF")
+        publish_cleaning_state(client)
+    return now_active
+
+
 def arm_one_time_pump_run(client):
     """Install a single dated cron entry at the manual run time.
 
@@ -2134,6 +2160,12 @@ def reconcile_actuator_state(client):
 
     last = None
     last_next_run = None
+    # Whether a cleaning run was active on the previous pass. A run is usually
+    # ended by the watchdog thread in the pump routes, by POST /pump/clean/stop,
+    # or by POST /pump/off -- none of which hold an MQTT client, so none of them
+    # can announce it. Remembering the previous state lets this loop publish the
+    # ON->OFF edge on their behalf.
+    last_cleaning = cleaning_lib.is_active()
     while True:
         try:
             # The next-run sensor has to advance once a run has passed. It changes
@@ -2161,12 +2193,12 @@ def reconcile_actuator_state(client):
                 # a tank that has dropped below the cleaning cutoff, ends here. This
                 # loop is the one thing guaranteed to keep ticking, so it is the
                 # backstop for the watchdog thread in the pump routes.
-                if enforce_cleaning_deadline(client):
+                was_cleaning = last_cleaning
+                last_cleaning = sync_cleaning_state(client, was_cleaning)
+                if was_cleaning and not last_cleaning:
+                    # The pump was turned off as the run ended; re-read it so the
+                    # safety-cap logic below sees the real duty cycle.
                     pump_pct = _live_duty_percent(pump)
-                elif cleaning_lib.is_active():
-                    # Keep "Cleaning Time Left" counting down. Only while a run is
-                    # active, so an idle tower publishes nothing on this topic.
-                    publish_cleaning_state(client)
 
                 if pump_pct:
                     if _ensure_pump_safety_armed():
