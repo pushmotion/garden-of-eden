@@ -54,6 +54,26 @@ read_pump_cap() {
 readonly TIME_MAX=$(read_pump_cap)
 readonly TIME_DEFAULT="${TIME_MAX}"
 
+# Record a line in the system journal (`journalctl -t garden-water`).
+#
+# cron mails a job's output, and the Pi has no MTA, so everything this script
+# prints under cron is discarded ("No MTA installed, discarding output"). A
+# refused run used to vanish that way: tower 1 skipped six runs in a row with no
+# trace outside a state file. Echoes too, so an interactive caller still sees it.
+# Never fatal -- a missing `logger` must not block or abort a watering run.
+log_event() {
+    local priority="$1"
+    shift
+    if [[ "${priority}" == "err" || "${priority}" == "warning" ]]; then
+        echo "$*" >&2
+    else
+        echo "$*"
+    fi
+    if command -v logger >/dev/null 2>&1; then
+        logger -t garden-water -p "user.${priority}" -- "$*" 2>/dev/null || true
+    fi
+}
+
 # Turn off water pump
 turn_off_water() {
     "${GOE_PATH}/venv/bin/python" "${GOE_PATH}/app/sensors/pump/pump.py" --off
@@ -67,13 +87,15 @@ turn_off_water() {
 # the run proceeds, so a stopped service cannot withhold water indefinitely.
 check_water_level() {
     if [[ "${OVERRIDE_LOW_WATER}" == true ]]; then
-        echo "WARNING: --override-low-water-level set; skipping the dry-run guard."
+        log_event warning "WARNING: --override-low-water-level set; skipping the dry-run guard."
         return 0
     fi
-    if "${GOE_PATH}/venv/bin/python" -m app.lib.water_guard; then
+    local verdict
+    if verdict=$("${GOE_PATH}/venv/bin/python" -m app.lib.water_guard 2>&1); then
+        log_event info "Water guard: ${verdict}"
         return 0
     fi
-    echo "ERROR: refusing to water. Pass --override-low-water-level to force it." >&2
+    log_event err "ERROR: refusing to water: ${verdict}. Pass --override-low-water-level to force it."
     return 1
 }
 
@@ -88,7 +110,7 @@ turn_on_water() {
 water_for_time() {
     local time="$1"
     check_water_level || exit 1
-	echo "Watering for ${time} seconds."
+    log_event info "Watering for ${time} seconds."
     turn_on_water
     sleep "${time}"
     # turn_off_water # turn off will be caught by the exit trap.
@@ -161,7 +183,7 @@ main() {
     #
     # "off" is exempt below: stopping the pump is safe from any source, always.
     if [[ "$1" != "off" ]] && cleaning_in_progress; then
-        echo "Cleaning run in progress; skipping this watering run."
+        log_event info "Cleaning run in progress; skipping this watering run."
         exit 0
     fi
 

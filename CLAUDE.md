@@ -134,7 +134,7 @@ All config flows through `config.py`, which reads `.env` (copy from `.env-dist`)
 - `pizero2-upgrade.md` — moving a tower from a Zero W to a Zero 2 W.
 - `simulator.md` — running the full stack off-Pi.
 - `INSTALL.md`, `access.md`, `design.md`, `maintenance.md` — inherited from upstream.
-- `homeassistant/` — two example dashboards. `pm-example.yaml` covers all 47 discovered entities; `lovelace-example.yaml` is a 24-entity subset and its header lists every omission.
+- `homeassistant/` — two example dashboards. `pm-example.yaml` covers all 49 discovered entities; `lovelace-example.yaml` is a 25-entity subset and its header lists every omission.
 
 ## Commit conventions
 
