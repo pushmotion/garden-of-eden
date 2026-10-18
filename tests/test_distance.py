@@ -25,6 +25,10 @@ class TestDistance(unittest.TestCase):
         measured_distance = self.distance.measure_once()
         self.assertAlmostEqual(measured_distance, 50.00)
 
+    def test_close_stops_the_gpiozero_sensor(self):
+        self.distance.close()
+        self.mock_sensor.close.assert_called_once_with()
+
     def test_median_odd_length(self):
         data = [1, 2, 3, 4, 5]
         median_value = self.distance.median(data)

@@ -72,6 +72,9 @@ def install():
         def __init__(self, *a, **k):
             pass
 
+        def close(self):
+            pass
+
     class _Button:
         def __init__(self, *a, **k):
             self.when_pressed = None

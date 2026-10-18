@@ -45,6 +45,15 @@ class Distance:
         except Exception as e:
             raise MeasurementError(f"Failed to initialize DistanceSensor: {e}")
 
+    def close(self):
+        """
+        Stops gpiozero's background sampling thread and releases the pins.
+
+        The thread reads through the pin factory's pigpio connection, so close
+        the sensor before that connection is torn down.
+        """
+        self.sensor.close()
+
     def measure_once(self):
         """
         Measures the distance once.
