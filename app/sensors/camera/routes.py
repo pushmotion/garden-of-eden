@@ -1,5 +1,4 @@
 import logging
-import os
 
 from flask import Blueprint, jsonify, send_file
 
@@ -38,7 +37,9 @@ def get_timelapse(cam):
     if cam not in camera.CAMERAS:
         return jsonify(error="unknown camera"), 400
     path = camera.timelapse_path(cam)
-    if not os.path.exists(path):
+    # has_video, not os.path.exists: a build that silently produced a 48-byte
+    # stub must not be served as a working clip with a 200.
+    if not camera.has_video(cam):
         return jsonify(error="no timelapse yet — generate one"), 404
     return send_file(path, mimetype="video/mp4")
 

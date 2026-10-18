@@ -88,6 +88,23 @@ class WaterThresholdTestCase(unittest.TestCase):
         self.mqtt.restore_water_threshold()
         self.assertEqual(self.mqtt.WATER_LOW_CM, 11.0)
 
+    def test_a_persisted_value_past_the_tank_floor_is_ignored(self):
+        """The 2026-09-21 incident: 25.0 cm persisted, floor 23.05 (20 here)."""
+        from app.lib import state as state_lib
+
+        state_lib.save_state(water_low_cm=25.0)
+        self.mqtt.WATER_LOW_CM = 11.0
+        self.mqtt.restore_water_threshold()
+        self.assertEqual(self.mqtt.WATER_LOW_CM, 11.0)
+
+    def test_the_ha_number_cannot_ask_for_more_than_the_tank_floor(self):
+        self.assertFalse(self.mqtt.valid_water_threshold("25"))
+        self.assertFalse(self.mqtt.valid_water_threshold("inf"))
+        self.assertFalse(self.mqtt.valid_water_threshold("nan"))
+        self.assertFalse(self.mqtt.valid_water_threshold("-1"))
+        self.assertTrue(self.mqtt.valid_water_threshold("0"))
+        self.assertTrue(self.mqtt.valid_water_threshold("16.5"))
+
     def test_an_unusable_persisted_value_is_ignored(self):
         from app.lib import state as state_lib
 

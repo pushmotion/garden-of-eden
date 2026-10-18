@@ -63,8 +63,54 @@ class WaterLowTestCase(unittest.TestCase):
 
     def test_disabled_threshold_reports_not_low(self):
         self.mqtt.WATER_LOW_CM = None
-        self.mqtt.evaluate_water_low(self.client)
+        with self._readings([5] * 5):
+            self.mqtt.evaluate_water_low(self.client)
         self.assertEqual(self.client.last_low(), "OFF")
+
+    def test_disabled_alert_still_records_the_pump_verdict(self):
+        """WATER_LOW_CM=0 used to return before reading the tank at all.
+
+        The cron guard then saw only stale verdicts and failed open on every
+        run, "Watering Blocked" froze, and cleaning (fails closed) was refused.
+        """
+        import os
+        import tempfile
+
+        import config
+        from app.lib import state as state_lib
+
+        self.mqtt.WATER_LOW_CM = None
+        tmp = tempfile.mkdtemp()
+        with (
+            mock.patch.object(config, "STATE_FILE", os.path.join(tmp, "state.json")),
+            mock.patch.object(self.mqtt, "PUMP_CUTOFF_CM", 12.89),
+            mock.patch.object(self.mqtt, "_pump_is_circulating", return_value=False),
+            self._readings([13.73] * 5),
+        ):
+            result = self.mqtt.evaluate_water_low(self.client)
+            state = state_lib.load_state()
+        self.assertEqual(result, 13.73)
+        self.assertEqual(self.client.last_low(), "OFF")
+        self.assertTrue(state["pump_blocked"], "the verdict must be recorded with the alert off")
+        self.assertEqual(state["water_airgap_cm"], 13.73)
+        blocked = [p for t, p in self.client.published if t.endswith("/water/pump_blocked/state")]
+        self.assertEqual(blocked, ["ON"])
+
+    def test_a_missing_echo_is_not_a_dry_tank(self):
+        """Five saturated reads (100.00 cm) must leave the verdict alone.
+
+        Recording them as a dry tank refused watering on the one hardware fault
+        the guard is documented to fail open on; dropping them lets the stored
+        verdict go stale, which is that fail-open path.
+        """
+        with (
+            self._readings([100.0] * 5),
+            mock.patch.object(self.mqtt, "record_water_reading") as rec,
+        ):
+            result = self.mqtt.evaluate_water_low(self.client)
+        self.assertIsNone(result)
+        rec.assert_not_called()
+        self.assertIsNone(self.client.last_low())
 
     def test_all_reads_failing_publishes_nothing(self):
         with self._readings([None] * 5):

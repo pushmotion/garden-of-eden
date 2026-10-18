@@ -19,23 +19,55 @@ def is_water_low(distance_cm, threshold_cm):
     return distance_cm > threshold_cm
 
 
-def pump_cutoff(cutoff_cm, alert_cm):
+def pump_cutoff(cutoff_cm, alert_cm, empty_cm=None, min_depth_cm=None):
     """The airgap at which the pump is refused, as opposed to merely alerted on.
 
     ``cutoff_cm`` unset falls back to ``alert_cm``, which is the behaviour from
     before the two were split -- one threshold doing both jobs.
 
-    A cutoff must be a *larger* airgap than the alert, because a larger airgap
-    means less water: the tank has to warn before it stops the pump. A cutoff
-    that trips first would refuse to water a tank the user was never told was
-    low, so an inverted pair is rejected in favour of the alert value, which
-    fails toward the earlier, safer of the two.
+    A cutoff should be a *larger* airgap than the alert, because a larger airgap
+    means less water: the tank warns before it stops the pump. When the pair is
+    inverted the *smaller* airgap wins -- the earlier trip, the one that keeps
+    more water in the tank. This used to fall back to the alert instead, and on
+    2026-09-21 an alert persisted from Home Assistant at 25 cm (past the 23.05 cm
+    tank floor) made that the effective cutoff: no reading could ever exceed it,
+    and the dry-run interlock was silently gone.
+
+    ``empty_cm`` is the tank floor. A resolved cutoff at or past it means "run
+    until dry", so it is replaced by ``empty_cm - min_depth_cm``, the same hard
+    floor ``cleaning_cutoff`` keeps. Values inside the tank are left alone.
     """
     if not cutoff_cm:
-        return alert_cm or None
-    if alert_cm and cutoff_cm < alert_cm:
-        return alert_cm
-    return cutoff_cm
+        resolved = alert_cm or None
+    elif alert_cm and cutoff_cm < alert_cm:
+        resolved = cutoff_cm
+    else:
+        resolved = cutoff_cm
+    if resolved is None:
+        return None
+    if empty_cm and resolved >= empty_cm:
+        floor = empty_cm - (min_depth_cm or 0)
+        if floor > 0:
+            return floor
+    return resolved
+
+
+def is_plausible_airgap(distance_cm, empty_cm, max_range_cm=100.0, margin_cm=10.0):
+    """True when a reading could be a real water surface in this tank.
+
+    ``gpiozero.DistanceSensor`` saturates at ``max_distance`` (1 m), so a missing
+    echo -- a dead echo line, a bad header joint, or the reservoir pulled out --
+    comes back as exactly 100.00 cm, a well-formed float. Nothing is more than
+    ``margin_cm`` below the tank floor either. Neither is a depth; treating one
+    as a dry tank refused watering on the very fault the guard fails open on.
+    """
+    if distance_cm is None:
+        return False
+    if distance_cm >= max_range_cm:
+        return False
+    if empty_cm and distance_cm > empty_cm + margin_cm:
+        return False
+    return distance_cm >= 0
 
 
 def is_reading_fresh(checked_at_iso, now, max_age_seconds):

@@ -54,7 +54,7 @@ def capture(device, output_path, resolution=None):
     ]
     with _capture_lock, file_lock(config.STATE_FILE + ".camera.lock"):
         logger.info("Capturing image from %s -> %s", device, output_path)
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, capture_output=True, check=True, timeout=CAPTURE_TIMEOUT_SECONDS)
     return output_path
 
 
@@ -88,6 +88,13 @@ def timelapse_path(cam):
 # a build produced video -- see generate_timelapse(). A real clip is kilobytes
 # even for one frame, so anything this small is an empty container.
 MIN_VIDEO_BYTES = 1024
+
+# A stalled UVC camera used to block fswebcam forever while this process held the
+# cross-process camera lock, so the MQTT image publish and Refresh All queued
+# behind it indefinitely. Captures are a few seconds; encodes on a Zero W run
+# about five minutes for a full archive.
+CAPTURE_TIMEOUT_SECONDS = 60
+ENCODE_TIMEOUT_SECONDS = 1800
 
 # ffmpeg's image2 demuxer stops at the first frame it cannot read, so a single
 # unusable file truncates the whole clip from that point -- and still exits 0.
@@ -376,7 +383,13 @@ def generate_timelapse(cam):
         out,
     ]
     logger.info("Assembling timelapse for %s (%d frames) -> %s", cam, len(frames), out)
-    proc = subprocess.run(cmd, capture_output=True, check=True, stdin=subprocess.DEVNULL)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        timeout=ENCODE_TIMEOUT_SECONDS,
+    )
 
     # check=True is not enough on its own: the failure mode above exits 0. Verify
     # the artifact instead of trusting the status, so a build that produced no

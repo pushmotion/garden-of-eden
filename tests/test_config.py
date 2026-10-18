@@ -32,6 +32,24 @@ class ConfigParsingTestCase(unittest.TestCase):
         self.assertTrue(cfg.TELEGRAF_ENABLED)
         self.assertFalse(cfg.ALEXA_ENABLED)
 
+    def test_blank_float_falls_back_to_the_default(self):
+        """``PUMP_CUTOFF_CM=`` used to raise at import and take every process down.
+
+        Under cron that crash surfaced as a *refused* watering run.
+        """
+        cfg = self._reload(PUMP_CUTOFF_CM="", WATER_EMPTY_CM=" ")
+        self.assertIsNone(cfg.PUMP_CUTOFF_CM)
+        self.assertEqual(cfg.WATER_EMPTY_CM, 20)
+
+    def test_non_finite_floats_fall_back_too(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            cfg = self._reload(PUMP_CUTOFF_CM="inf", WATER_FULL_CM="nan")
+        self.assertIsNone(cfg.PUMP_CUTOFF_CM)
+        self.assertEqual(cfg.WATER_FULL_CM, 5)
+
     def test_water_low_zero_disables(self):
         cfg = self._reload(WATER_LOW_CM="0")
         self.assertIsNone(cfg.WATER_LOW_CM)

@@ -134,6 +134,21 @@ class VacationModeTestCase(unittest.TestCase):
 
 
 class NormalizeScheduleTestCase(unittest.TestCase):
+    def test_brightness_out_of_range_is_rejected_when_applying(self):
+        """light.sh turns 150 into 70 % and -5 into "never on"; say no at the API."""
+        for bad in (150, -5, "lots"):
+            s = {"lights": {"enabled": True, "days": {"mon": [{"brightness": bad}]}}}
+            with self.assertRaises(ValueError):
+                sched.normalize_schedule(s, strict=True)
+
+    def test_brightness_out_of_range_is_clamped_on_load(self):
+        """A schedule already saved with a bad value must still load."""
+        s = {
+            "lights": {"enabled": True, "days": {"mon": [{"brightness": 150}, {"brightness": -5}]}}
+        }
+        days = sched.normalize_schedule(s)["lights"]["days"]["mon"]
+        self.assertEqual([w["brightness"] for w in days], [100, 0])
+
     def test_legacy_pump_runs_apply_to_all_days(self):
         s = {"pump": {"enabled": True, "runs": [{"time": "12:00", "duration": 5}]}}
         norm = sched.normalize_schedule(s)
@@ -310,6 +325,18 @@ class ScheduleEndpointTestCase(unittest.TestCase):
     def test_validate_rejects_a_non_object(self):
         self.assertEqual(self.client.post("/schedule/validate", json=[]).status_code, 400)
 
+    def test_validate_rejects_an_out_of_range_brightness(self):
+        payload = {
+            "lights": {
+                "enabled": True,
+                "days": {"mon": [{"onTime": "05:00", "offTime": "21:00", "brightness": 150}]},
+            },
+            "pump": {"enabled": False},
+        }
+        resp = self.client.post("/schedule/validate", json=payload)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("brightness", resp.get_json()["error"])
+
     def test_installed_cron_is_listable(self):
         body = self.client.get("/schedule/cron").get_json()
         self.assertIn("count", body)
@@ -379,6 +406,38 @@ class OneTimePumpRunTestCase(unittest.TestCase):
         self.crontab = []
         self.assertEqual(sched.prune_one_time_pump_runs(now=self.now), [])
         self.assertEqual(self.crontab, [])
+
+    def test_a_failed_crontab_read_is_not_an_empty_crontab(self):
+        """Only "no crontab for <user>" means empty; any other failure raises.
+
+        Treating a failure as empty let apply_schedule() and the one-off path
+        write over every foreign line -- and the whole recurring schedule.
+        """
+        import subprocess
+
+        failing = subprocess.CompletedProcess(
+            ["crontab", "-l"], 1, stdout="", stderr="crontab: /var/spool/cron: EIO"
+        )
+        none_yet = subprocess.CompletedProcess(
+            ["crontab", "-l"], 1, stdout="", stderr="no crontab for pi"
+        )
+        fine = subprocess.CompletedProcess(["crontab", "-l"], 0, stdout="a\nb\n", stderr="")
+
+        with self.assertRaises(sched.CrontabUnreadable):
+            sched._crontab_lines(failing)
+        self.assertEqual(sched._crontab_lines(none_yet), [])
+        self.assertEqual(sched._crontab_lines(fine), ["a", "b"])
+
+    def test_a_one_off_is_not_added_over_an_unreadable_crontab(self):
+        self.crontab = ["0 9 * * * /usr/local/bin/water 180 # garden-of-eden"]
+
+        def unreadable():
+            raise sched.CrontabUnreadable("EIO")
+
+        with patch.object(sched, "_read_crontab", unreadable):
+            with self.assertRaises(sched.CrontabUnreadable):
+                sched.add_one_time_pump_run("15:00", 3, now=self.now)
+        self.assertEqual(len(self.crontab), 1, "nothing may be written over an unreadable crontab")
 
     def test_applying_a_schedule_preserves_a_pending_one_off(self):
         sched.add_one_time_pump_run("15:00", 3, now=self.now)

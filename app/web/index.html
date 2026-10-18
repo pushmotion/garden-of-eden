@@ -473,7 +473,7 @@
       </div>
       <div class="row" style="margin-top:16px">
         <button class="btn" onclick="saveSchedule()">Save schedule</button>
-        <span class="muted" id="sch-status">pump runs are capped at 5 min for safety</span>
+        <span class="muted" id="sch-status">pump runs are capped for safety</span>
       </div>
     </div>
   </div>
@@ -621,7 +621,11 @@
       }
       try {
         const w = await get("/distance"); const cm = w.distance;
-        $("s-water").textContent = fmtDist(cm);
+        // distance is null when the service's reading is missing or stale
+        // (fresh=false). +null is 0, which rendered as "0.0 cm" with an OK
+        // badge: an overflowing tank reported healthy while the sensor was dead.
+        const stale = cm == null || w.fresh === false;
+        $("s-water").textContent = stale ? "—" : fmtDist(cm);
         $("s-water-gal").textContent = (w.gallons != null) ? fmtVol(w.gallons) : "—";
         // The API derives the fill percentage from the tower's own calibration,
         // the same call Home Assistant's Water Remaining comes from. Deriving it
@@ -630,7 +634,9 @@
         $("s-water-bar").style.width = (w.percent != null ? Math.max(0, Math.min(100, w.percent)) : 0) + "%";
         // Tank-low warning: larger distance = lower water (threshold from /system).
         const badge = $("s-water-status");
-        if (waterLowCm != null && cm > waterLowCm) {
+        if (stale) {
+          badge.textContent = "NO READING"; badge.style.cssText = "background:#7f8c8d;color:#fff;border-color:#7f8c8d";
+        } else if (waterLowCm != null && cm > waterLowCm) {
           badge.textContent = "LOW"; badge.style.cssText = "background:#c0392b;color:#fff;border-color:#c0392b";
         } else if (waterLowCm != null) {
           badge.textContent = "OK"; badge.style.cssText = "";
@@ -671,6 +677,9 @@
           pumpMaxMinutes = Math.max(1, Math.floor(pumpMaxSeconds / 60));
         }
         $("d-pumpcap").textContent = s.pump_max_run_seconds != null ? `${Math.round(pumpMaxSeconds / 60)} min` : "—";
+        // The schedule card's caption used to hardcode "5 min"; it follows the
+        // tower's own cap like every other readout.
+        if (s.pump_max_run_seconds != null) $("sch-status").textContent = `pump runs are capped at ${Math.round(pumpMaxSeconds / 60)} min for safety`;
         $("run-secs").max = pumpMaxSeconds;
         $("run-secs-max").textContent = pumpMaxSeconds;
         $("once-dur").max = pumpMaxMinutes;

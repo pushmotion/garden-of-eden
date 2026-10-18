@@ -61,7 +61,7 @@ Because the stub bootstrap lives in the `tests` package `__init__`, plain
 # Run a driver directly (each has its own __main__ + argparse):
 python app/sensors/light/light.py [--on] [--off] [--brightness INT]
 python app/sensors/pump/pump.py [--on] [--off] [--speed INT]
-python app/sensors/distance/distance.py
+python app/sensors/distance/distance.py   # only with mqtt.service stopped: two readers cross-talk
 ```
 
 Symlinks `light` and `water` (created by setup.sh → `bin/light.sh`, `bin/water.sh`) are convenience CLI wrappers on the Pi.

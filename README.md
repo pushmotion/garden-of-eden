@@ -455,7 +455,7 @@ sudo systemctl status mqtt.service
 ### MQTT with HomeAssistant
 
 Every entity is created automatically by MQTT discovery — nothing is added by
-hand. 47 entities appear under one device.
+hand. 49 entities appear under one device.
 
 **Suggested initial entity ids:** `<domain>.<MQTT_IDENTIFIER>_<suffix>`, because
 each discovery payload sets `default_entity_id` to its domain plus `unique_id`.
@@ -878,7 +878,7 @@ Using `gpiozero` to leverage `pigpio` daemon which is hardware driven and more e
 ├── simulator               full stack with stateful fake hardware, off-Pi
 ├── services                systemd unit, mosquitto + telegraf configs, udev rules
 ├── docs                    DEPLOYMENT.md, INSTALL.md, design, access, homeassistant/
-└── tests                   185+ tests; _hwstub.py fakes GPIO when libs are absent
+└── tests                   400+ tests; _hwstub.py fakes GPIO when libs are absent
 ```
 
 Every sensor follows the same shape — `<name>.py` (a driver class with an

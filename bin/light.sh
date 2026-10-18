@@ -2,7 +2,7 @@
 
 # Script to control Gardyn lights
 # Usage: light <brightness|on|off>
-# "on" sets brightness to 70%, valid brightness range is 4%-100%
+# "on" sets brightness to 70%, valid brightness range is 0-100
 
 # -e exit immediately 
 # -u undefined variables trigger error

@@ -32,6 +32,8 @@ def set_schedule():
     except FileNotFoundError:
         # crontab binary missing (e.g. off-Pi) — schedule is still saved.
         return jsonify(error="crontab not available on this host"), 503
+    except sched.CrontabUnreadable as exc:
+        return jsonify(error=str(exc)), 503
     return jsonify(applied)
 
 
@@ -85,7 +87,7 @@ def validate_schedule():
     if not isinstance(data, dict):
         return jsonify(error="expected a JSON schedule object"), 400
     try:
-        normalized = sched.normalize_schedule(data)
+        normalized = sched.normalize_schedule(data, strict=True)
         lines = sched.build_cron_lines(normalized)
     except (ValueError, TypeError) as exc:
         return jsonify(valid=False, error=str(exc)), 400
