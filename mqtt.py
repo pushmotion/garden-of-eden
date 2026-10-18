@@ -437,6 +437,34 @@ def measure_distance_median(samples=5):
 # low evaluations before reporting ON; clear to OFF immediately.
 _water_low_streak = 0
 
+# The last reading evaluate_water_low accepted, kept so a (re)connect can repeat
+# the pump verdict without taking a reading of its own.
+_last_water_distance = None
+
+
+def publish_water_low_state(client):
+    """Publish the debounced low-water state as it stands. Takes no reading and
+    leaves the streak alone. Returns whether the alert is on."""
+    low = WATER_LOW_CM not in (None, 0) and _water_low_streak >= 2
+    client.publish(BASE_TOPIC + "/water/low/state", "ON" if low else "OFF", retain=True)
+    return low
+
+
+def republish_water_verdict(client):
+    """Repeat the current low-water and pump verdicts without re-evaluating.
+
+    on_connect used to call ``update_water_low_state``, which resets the debounce
+    and takes a reading. The poll thread takes its own first reading in the same
+    second, so on every restart (and every broker reconnect) two evaluations of
+    one cached sensor value met the two-in-a-row requirement and a single
+    reading could raise the alert. The poll thread owns evaluation; a connect
+    only restates what it last concluded, so a stale retained "ON" still clears
+    after a restart (the streak starts at 0) and a reconnect mid-alert keeps it.
+    """
+    publish_water_low_state(client)
+    if _last_water_distance is not None:
+        publish_watering_blocked(client, _last_water_distance)
+
 
 def evaluate_water_low(client):
     """Read the tank (spike-rejected) and publish a debounced low-water state.
@@ -448,16 +476,17 @@ def evaluate_water_low(client):
     open on every run, "Watering Blocked" froze on its retained value, and
     cleaning -- which fails closed -- was refused outright.
     """
-    global _water_low_streak
+    global _water_low_streak, _last_water_distance
     alert_enabled = WATER_LOW_CM not in (None, 0)
     if not alert_enabled:
         _water_low_streak = 0
-        client.publish(BASE_TOPIC + "/water/low/state", "OFF", retain=True)
+        publish_water_low_state(client)
 
     distance = measure_distance_median()
     if distance is None:
         logger.warning("Skipping water-low update: distance reading failed")
         return None
+    _last_water_distance = distance
 
     if not alert_enabled:
         record_water_reading(distance)
@@ -469,8 +498,7 @@ def evaluate_water_low(client):
     else:
         _water_low_streak = 0
 
-    low = _water_low_streak >= 2
-    client.publish(BASE_TOPIC + "/water/low/state", "ON" if low else "OFF", retain=True)
+    low = publish_water_low_state(client)
     logger.info(
         "Water level %.2fcm (alert %.2fcm, pump cutoff %.2fcm) -> low=%s (streak %d)",
         distance,
@@ -1932,9 +1960,11 @@ def on_connect(client, userdata, flags, rc, properties=None):
     # otherwise sits at "unknown" until someone writes it.
     publish_water_thresholds(client)
     publish_water_low_mode(client)
-    # Publish a fresh low-water state on every connect so a stale retained "ON"
-    # (e.g. from before a restart) clears immediately instead of lingering.
-    update_water_low_state(client)
+    # Restate the low-water and pump verdicts on every connect so a stale retained
+    # "ON" (e.g. from before a restart) clears immediately instead of lingering.
+    # Not a new evaluation: the water poll thread owns those, and a second one
+    # here counted twice toward the debounce on every restart.
+    republish_water_verdict(client)
     publish_watering_skipped(client)
     publish_over_temp_state(client)
     publish_grow_state(client)
@@ -2598,6 +2628,17 @@ def graceful_shutdown(signum, frame):
             state_lib.save_state(pump_on=False)
         except Exception:
             logger.exception("Could not record the pump as off at shutdown")
+        # gpiozero's DistanceSensor keeps a queue-filling thread reading through
+        # pigpio. pump.close() drops that connection, so a sensor left open had
+        # its thread die on a dead socket ("OSError: [Errno 9] Bad file
+        # descriptor") in the journal at every SIGTERM. Stop it first. Nothing
+        # else here runs a background thread: the Buttons only use pigpio
+        # callbacks. A failure must not skip the pump close below.
+        if distance_sensor is not None:
+            try:
+                distance_sensor.close()
+            except Exception:
+                logger.exception("Could not close the distance sensor at shutdown")
         pump.close()
         # Deliberately no light.close(): gpiozero writes 0 to the pin on close,
         # so every `systemctl restart` switched the grow light off, and with the
