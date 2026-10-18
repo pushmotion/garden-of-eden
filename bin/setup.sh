@@ -246,7 +246,7 @@ function add_sensor_type_to_env {
     log_info "Setting temp&humidity SENSOR_TYPE in .env"
     if ! grep -q "SENSOR_TYPE=" $INSTALL_DIR/.env; then
         local sensor_type="AM2320"
-        if i2cdetect -y 1 | grep -q "38"; then
+        if sudo i2cdetect -y 1 | grep -q "38"; then
             sensor_type="DHT20"
         fi
         log_info "Setting SENSOR_TYPE=$sensor_type in .env"
@@ -412,12 +412,16 @@ function setup_api_service {
     cat > $service_file <<EOF
 [Unit]
 Description=Garden of Eden REST API + Web UI
-After=network.target pigpiod.service
-Wants=pigpiod.service
+After=network-online.target pigpiod.service
+Wants=network-online.target pigpiod.service
 
 [Service]
 User=$USER
 WorkingDirectory=$INSTALL_DIR
+# Same wait as mqtt.service: pigpiod forks before it listens, and if the API
+# imports first its drivers fail to build, nothing crashes, and every /pump
+# and /light route answers 400 until somebody restarts it by hand.
+ExecStartPre=/bin/bash -c 'for i in \$(seq 1 60); do (echo > /dev/tcp/127.0.0.1/8888) >/dev/null 2>&1 && exit 0; sleep 1; done; exit 0'
 ExecStart=$INSTALL_DIR/venv/bin/waitress-serve --listen=0.0.0.0:5000 run:app
 Restart=always
 RestartSec=5
@@ -519,15 +523,23 @@ EOF
     log_info "Nightly auto-update enabled (garden-autoupdate.timer, ~03:30)."
 }
 
-# Verify the REST API responds, if it is running (issue #51 checklist item).
+# Verify the REST API answers, if it is running (issue #51 checklist item).
+#
+# Read-only on purpose. This used to run bin/api-test.sh, which POSTs to
+# /pump/on, /pump/speed and /light/off -- so re-running setup.sh on a live
+# tower spun the pump (dry, if the tank was out) and switched the grow lights
+# off mid-photoperiod. A health check must never drive an actuator; the tests
+# in api-test.sh are for a bench, with the pump submerged, by hand.
 function verify_api {
-    if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null -w '' "http://localhost:5000/temperature" 2>/dev/null; then
-        log_info "Running API smoke test (bin/api-test.sh)"
-        bash "${INSTALL_DIR}/bin/api-test.sh" >/dev/null 2>&1 \
-            && log_pass "API smoke test passed." \
-            || log_error "API smoke test reported errors. Start it with 'python run.py' and re-run bin/api-test.sh."
+    if ! command -v curl >/dev/null 2>&1; then
+        log_info "curl not installed; skipping the API check."
+        return 0
+    fi
+    local body
+    if body=$(curl -s --max-time 10 "http://localhost:5000/system" 2>/dev/null) && [ -n "$body" ]; then
+        log_pass "REST API answered GET /system."
     else
-        log_info "REST API not running; skipping smoke test. Start it with 'python run.py' then run bin/api-test.sh."
+        log_info "REST API not answering on :5000 yet; check 'systemctl status garden-api.service'."
     fi
 }
 

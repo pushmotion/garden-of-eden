@@ -4,8 +4,9 @@
 # Usage: water <seconds|on|off>
 # "on" runs for the full cap. Valid range is 1 second to MAX_PUMP_RUN_SECONDS
 # from config.py (300 by default) -- a hard safety cap shared with the pump
-# routes, the schedule compiler and Home Assistant. Out-of-range input falls
-# back to the default rather than being clamped, so a typo cannot become a run.
+# routes, the schedule compiler and Home Assistant. Out-of-range input is an
+# error (exit 1), never clamped and never defaulted: `water 0` or `water 3000`
+# used to run the full cap, which is how a typo becomes a five-minute run.
 
 # -e exit immediately
 # -u undefined variables trigger error
@@ -15,7 +16,7 @@ set -euo pipefail
 # Constants
 readonly TIME_MIN=1          # 1 second
 readonly SPEED=50
-readonly WATER_BY_DEFAULT=true  # Whether to default to TIME_DEFAULT on invalid input
+readonly WATER_BY_DEFAULT=false # Out-of-range input is an error, never a default run
 
 # Set by --override-low-water-level: run the pump even below the cutoff.
 # Upstream iot-root#83 asked for this escape hatch alongside the safeguard.
@@ -43,7 +44,10 @@ export PYTHONPATH="${GOE_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
 # values rather than unbounded.
 read_pump_cap() {
     local cap
-    cap=$("${GOE_PATH}/venv/bin/python" -c         'import config; print(int(config.MAX_PUMP_RUN_SECONDS))' 2>/dev/null) || cap=""
+    # From the repo root: python-dotenv searches for .env from the caller's
+    # directory, and under cron that is $HOME, where it found nothing and this
+    # quietly fell back to 300 while every other surface honoured .env.
+    cap=$(cd "${GOE_PATH}" && venv/bin/python -c 'import config; print(int(config.MAX_PUMP_RUN_SECONDS))' 2>/dev/null) || cap=""
     if [[ "${cap}" =~ ^[0-9]+$ ]] && (( cap >= 1 )); then
         echo "${cap}"
     else
@@ -110,6 +114,10 @@ turn_on_water() {
 water_for_time() {
     local time="$1"
     check_water_level || exit 1
+    # Arm the pump-off trap only now that this run is about to energize the
+    # pump. Armed at the top of the script it also fired on usage errors, so
+    # `water --help` typed during a scheduled run switched that run off.
+    trap clean_up EXIT
     log_event info "Watering for ${time} seconds."
     turn_on_water
     sleep "${time}"
@@ -149,8 +157,8 @@ The pump is refused when the tank is below the cutoff; --override-low-water-leve
 EOF
 }
 
-# Trap signals to ensure water is turned off
-trap clean_up EXIT
+# The EXIT trap that turns the pump off is armed inside water_for_time(), once a
+# run is actually about to start -- see there.
 
 # Main logic
 main() {

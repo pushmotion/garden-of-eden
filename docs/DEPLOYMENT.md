@@ -100,13 +100,15 @@ Calibrated values for this unit:
 
 | Variable | Value | Meaning |
 |---|---|---|
-| `WATER_EMPTY_CM` | 23.05 | sensor face to tank floor |
-| `WATER_FULL_CM` | 4.81 | airgap at the fill line |
-| `WATER_LOW_CM` | 9.1 | **alert** ≈ 13.95 cm depth ≈ 5.5" ≈ 76% remaining |
-| `PUMP_CUTOFF_CM` | 12.9 | **interlock** ≈ 10.15 cm depth ≈ **4.0"** ≈ 56% remaining |
-| `TANK_CAPACITY_GALLONS` | 5 | **should be 6.0** — measured 2026-09-21, see [RESERVOIR-STANDARD.md](RESERVOIR-STANDARD.md) |
+| `WATER_EMPTY_CM` | 23.05 | sensor face to tank floor (per unit: towers 2 and 3 read 23.08 and 23.17) |
+| `WATER_FULL_CM` | 4.51 | airgap at the fill line (`empty − 18.54`) |
+| `WATER_LOW_CM` | 9.08 | **alert** ≈ 13.97 cm depth ≈ 5.5" ≈ 75% remaining |
+| `PUMP_CUTOFF_CM` | 12.89 | **interlock** ≈ 10.16 cm depth ≈ **4.0"** ≈ 55% remaining |
+| `CLEANING_CUTOFF_CM` | 17.97 | cleaning-run cutoff ≈ 5.08 cm depth ≈ 2.0" |
+| `TANK_CAPACITY_GALLONS` | 6.0 | measured 2026-09-21 (5.8 for the 2nd-generation tank on tower 2), see [RESERVOIR-STANDARD.md](RESERVOIR-STANDARD.md) |
 
-Usable depth is therefore ~18.2 cm (7.2").
+Usable depth is therefore 18.54 cm (7.3"). These are the values applied to all
+three towers on 2026-09-21; the paragraphs below round them to 12.9 and 9.1.
 
 ### Where the 4-inch cutoff comes from
 
@@ -130,8 +132,14 @@ refill at what looks like a half-full tank.
 sat at 55.1% — the cutoff would have tripped essentially before you were ever
 warned. `WATER_LOW_CM=9.1` (5.5", 76%) puts the warning 1.5" of water ahead of
 the stop, mirroring the tilt margin. If you raise the cutoff, raise the alert
-too: `pump_cutoff()` rejects an inverted pair and silently falls back to the
-alert value, which would leave you with no interlock beyond the warning.
+too. An inverted pair (a cutoff that would trip before the alert) resolves to
+the *earlier* of the two, so the pump stops before you are warned; and a
+threshold at or past the tank floor is pulled back to
+`WATER_EMPTY_CM − CLEANING_MIN_DEPTH_CM` instead of switching the interlock off.
+That last rule exists because a 25 cm alert persisted from Home Assistant once
+became the effective cutoff on this tower -- past the 23.05 cm floor, so no
+reading could ever exceed it -- and the interlock was silently gone. The HA
+threshold control and the persisted value are now both bounded by the floor.
 
 ### Why two thresholds
 
@@ -251,8 +259,8 @@ python3 -m venv ~/gedev && ~/gedev/bin/pip install -r requirements-dev.txt
 ~/gedev/bin/ruff check . && ~/gedev/bin/black --check .
 ```
 
-CI gates on all three. Expect **at least 185 tests** on this branch and **126**
-on a branch cut from upstream `main` — the difference is this fork's own
+CI gates on all three. Expect **at least 400 tests** on this branch; a branch
+cut from upstream `main` carries far fewer. The difference is this fork's own
 coverage, so a materially lower count is a hint that something did not merge,
 not that tests vanished.
 
@@ -265,10 +273,12 @@ definitions.
 
 Do not put the venv in `/tmp`: WSL clears it between sessions.
 
-**`app/__init__.py` imports every sensor blueprint at module level**, so even
-importing `app.lib.grow` constructs the GPIO drivers. That is why the suite must
-not run on the Pi — it is not a theoretical hazard, it seizes the live pins on a
-tower with plants in it.
+**The route modules construct their GPIO drivers at import**, and `mqtt.py`
+builds its own distance sensor the same way. (The blueprint imports themselves
+now live inside `create_app()`, so `import app.lib.grow` no longer builds them,
+but the test suite imports the routes and `mqtt.py` directly.) That is why the
+suite must not run on the Pi — it is not a theoretical hazard, it seizes the
+live pins on a tower with plants in it.
 
 ## Updating the Pi
 
@@ -293,9 +303,20 @@ Restart both — a stale API process keeps serving the previous UI.
 Then confirm: `systemctl is-active mqtt.service garden-api.service`, and check the
 journal for `Connected with result code Success` plus the absence of tracebacks.
 
+**Towers 2 and 3 pull `origin/feat/gardyn-tower-local` on their own every night**
+(`garden-autoupdate.timer`, about 03:30–03:50, fast-forward only, and only to a
+commit whose CI run is green — `bin/check-update.py`). Tower 1 has no timer and
+is deployed by hand as above. A push to the build branch is therefore a deploy
+to two live towers the following night.
+
 Restarting is now safe for the actuators. It was not before: constructing a
 driver used to write 0 to its pin, so every API restart switched the lights and
-pump off mid-photoperiod, silently overriding cron. Verify with
+pump off mid-photoperiod, silently overriding cron. The MQTT service's shutdown
+handler then still `close()`d the light, which writes 0 as well; it now leaves
+the duty cycle to pigpiod, and its startup recovery (restore, schedule replay,
+pump cap) runs before the broker connection rather than inside `on_connect`, so
+a restart with Home Assistant's network down no longer leaves the tower dark
+until the next cron edge. Verify with
 `pigs gdc 18` (light) and `pigs gdc 24` (pump) — those read the true duty cycle
 straight from pigpiod, in units of 1/10000, so `6500` is 65%. They are the only
 trustworthy source when the dashboard and HA disagree.
@@ -322,7 +343,7 @@ unless the pump is submerged.
 **[`docs/homeassistant/pm-example.yaml`](homeassistant/pm-example.yaml) is the
 dashboard these towers use.** It is a Sections layout (HA 2024.3+) grouped by
 function — status first, then lighting, pump, one-time runs, environment,
-cameras, diagnostics, and it is the only example covering all 37 discovered
+cameras, diagnostics, and it is the only example covering all 49 discovered
 entities. `lovelace-example.yaml` alongside it is the older plain card list and
 a **subset** — 25 entities, with one-time pump runs, the derived water readings
 (depth/gallons), the refresh controls and the diagnostic log all absent. Keep it
@@ -472,7 +493,8 @@ Start" button is pressed** — until then HA shows in-memory defaults (stage
 `germination`, food `Ok`). Press it when planting; it resets stage, start date and
 acknowledgements, so press it per planting rather than casually.
 
-Reminder thresholds (all configurable): food every 7 days, thinning at day 14,
+Reminder thresholds (all configurable): food every 14 days
+(`NUTRIENT_REMINDER_DAYS`), thinning at day 14,
 root check at day 21, harvest at day 35. Grow Stage is a manual select — nothing
 advances it automatically.
 
@@ -743,6 +765,15 @@ unpowered or disconnected chip reads as "fine" rather than failing loud.
   the log. `main()` in `app/lib/water_guard.py` carries a catch-all for the same
   reason: an unhandled exception was once the only path that could refuse, and
   it did (see below).
+- **A reading of 100.00 cm is "no echo", not a depth.** `gpiozero.DistanceSensor`
+  saturates at 1 m, so a dead echo line, a bad header joint or a reservoir
+  pulled out all read exactly 100.00. The service drops such readings (anything
+  at the sensor's full scale, or more than 10 cm below the tank floor) with a
+  warning instead of recording them, so the verdict goes stale and watering
+  fails open as above while cleaning fails closed. Before this a saturated
+  sensor was recorded as a *dry tank* and refused every run. The flip side: a
+  tower whose tank is out *with a schedule enabled* would now run its pump dry
+  on the schedule, so set `PUMP_MAINTENANCE=true` on a dry tower.
 
 ## Open items
 
@@ -756,7 +787,7 @@ unpowered or disconnected chip reads as "fine" rather than failing loud.
       next button press turning it *on again* rather than off.
 - [x] ~~**`TANK_CAPACITY_GALLONS=5` is unverified**~~ — measured 2026-09-21:
       the reservoir holds **6.0 gallons** to the moulded fill line, so the
-      shipped 5 understates it by 20%. Still to apply on this tower. See
+      shipped 5 understates it by 20%. Applied to all three towers 2026-09-21. See
       [RESERVOIR-STANDARD.md](RESERVOIR-STANDARD.md).
 - [ ] **The pump ON path has never been exercised under test.** Every other path
       is verified; this one energizes the motor and was left for a physical check.

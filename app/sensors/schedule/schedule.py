@@ -68,12 +68,34 @@ def _empty_days():
     return {d: [] for d in DAYS}
 
 
-def normalize_schedule(schedule):
+def _brightness(window, strict=False):
+    """A light window's brightness as an int, kept to 0..100.
+
+    ``bin/light.sh`` reinterprets anything else: over 100 fails its range check
+    and ``LIGHT_BY_DEFAULT`` turns the lights on at 70 %, a negative value never
+    matches its digit test so the lights never come on at all. Neither is what a
+    saved 150 or -5 meant. ``strict`` raises so the API can say so with a 400;
+    otherwise the value is clamped, so an already-saved schedule still loads.
+    """
+    raw = window.get("brightness", 70)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid brightness {raw!r}")
+    if not 0 <= value <= 100:
+        if strict:
+            raise ValueError(f"brightness {value} is out of range 0-100")
+        value = max(0, min(100, value))
+    return value
+
+
+def normalize_schedule(schedule, strict=False):
     """Coerce any accepted schedule shape into the canonical per-day form.
 
     Accepts the current ``days`` layout, the legacy single-window layout
     (``lights.onTime``/``offTime``/``brightness`` and ``pump.runs``), or a mix,
-    and always returns a dict with full ``mon``..``sun`` day maps.
+    and always returns a dict with full ``mon``..``sun`` day maps. ``strict``
+    rejects out-of-range brightness instead of clamping it.
     """
     schedule = schedule or {}
     lights = dict(schedule.get("lights") or {})
@@ -90,9 +112,12 @@ def normalize_schedule(schedule):
         window = {
             "onTime": lights.get("onTime", "08:00"),
             "offTime": lights.get("offTime", "22:00"),
-            "brightness": int(lights.get("brightness", 70)),
+            "brightness": _brightness(lights, strict),
         }
         light_days = {d: [dict(window)] for d in DAYS}
+    for windows in light_days.values():
+        for window in windows:
+            window["brightness"] = _brightness(window, strict)
 
     # --- pump ---
     pump_days = _empty_days()
@@ -227,11 +252,24 @@ def build_cron_lines(schedule):
     return lines
 
 
-def _read_crontab():
-    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+class CrontabUnreadable(RuntimeError):
+    """``crontab -l`` failed for a reason other than "no crontab for <user>"."""
+
+
+def _crontab_lines(result):
+    """The lines of a ``crontab -l`` result, or raise ``CrontabUnreadable``."""
     if result.returncode != 0:
-        return []
+        # "no crontab for <user>" is a legitimate empty answer. Anything else
+        # is a failure, and treating it as empty let the next write replace
+        # every foreign line -- and the whole recurring schedule -- with nothing.
+        if "no crontab" in (result.stderr or "").lower():
+            return []
+        raise CrontabUnreadable(f"crontab -l failed ({result.returncode}): {result.stderr.strip()}")
     return result.stdout.splitlines()
+
+
+def _read_crontab():
+    return _crontab_lines(subprocess.run(["crontab", "-l"], capture_output=True, text=True))
 
 
 def _write_crontab(lines):
@@ -393,7 +431,7 @@ def next_pump_run(schedule, now=None, lookahead_days=8):
 def apply_schedule(schedule):
     """Persist the schedule and replace our crontab entries with its compiled form."""
     # Validate/compile first so a bad schedule never touches crontab.
-    schedule = normalize_schedule(schedule)
+    schedule = normalize_schedule(schedule, strict=True)
     cron_lines = build_cron_lines(schedule)
     save_schedule(schedule)
 
@@ -477,9 +515,13 @@ def prune_one_time_pump_runs(now=None, write=True):
     that is about to write anyway does not need two passes.
     """
     now = now or datetime.datetime.now()
-    lines = _read_crontab()
+    try:
+        lines = _read_crontab()
+    except CrontabUnreadable as exc:
+        logger.warning("Not pruning one-time runs: %s", exc)
+        return []
     if not lines:
-        # crontab unreadable (or genuinely empty) -- never write [] over it.
+        # genuinely empty -- nothing to prune and nothing to write.
         return []
     kept = []
     for line in lines:
@@ -506,6 +548,10 @@ def add_one_time_pump_run(hhmm, duration_minutes, now=None):
         f"{when.minute} {when.hour} {when.day} {when.month} * "
         f"{WATER_CMD} {seconds} {ONCE_MARKER} {when.isoformat()}"
     )
+    # Read the crontab directly rather than through the pruner's lenient
+    # fallback: an unreadable crontab must raise here, or the write below would
+    # replace the recurring schedule with just the one-off.
+    _read_crontab()
     kept = prune_one_time_pump_runs(now=now, write=False)
     if not any("schedule-refresh.sh" in entry for entry in kept):
         kept.append(f"2 0 * * * {shlex.quote(REFRESH_CMD)} {CRON_MARKER}")

@@ -1,8 +1,15 @@
+import math
 import os
+import warnings
 
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load the .env beside this file, by explicit path. python-dotenv's default
+# search starts from the *caller's* location, which under cron is $HOME -- so
+# `python -c 'import config'` from bin/water.sh silently ran on defaults while
+# the services (cwd = the repo) honoured .env. The plain call stays as a
+# fallback for a .env kept elsewhere; it never overrides a value already set.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 load_dotenv()
 
 
@@ -25,7 +32,22 @@ def _get_int(name, default):
 
 
 def _get_float(name, default):
-    return float(os.getenv(name, str(default)))
+    """Parse a float env var; a blank value means ``default``, like ``_get_int``.
+
+    ``KEY=`` is the natural way to "unset" something in ``.env`` and python-dotenv
+    hands it over as an empty string. ``float("")`` raised at import, which took
+    down every entry point at once -- including the cron watering path, where
+    the crash surfaced as a *refused* run. ``nan``/``inf`` fall back too: a
+    threshold of ``inf`` can never trip, and ``nan`` compares false to everything.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    value = float(raw.strip())
+    if not math.isfinite(value):
+        warnings.warn(f"{name}={raw!r} is not a finite number; using {default}", stacklevel=2)
+        return default
+    return value
 
 
 # ---------------------------------------------------------------------------

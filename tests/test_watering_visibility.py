@@ -103,6 +103,23 @@ class MqttWateringVisibilityTestCase(_TempState):
             self.mqtt.publish_watering_blocked(self.client, 13.73)
         self.assertIsNone(self.client.last("/water/pump_blocked/state"))
 
+    def test_the_recorded_verdict_is_held_while_the_pump_runs(self):
+        """The entity held its value mid-run; the file the cron guard reads did not.
+
+        A manual run pulls ~0.45 gal up the tower and the level crosses the
+        cutoff on a tank that is fine at rest; a scheduled run inside the
+        freshness window was refused for it.
+        """
+        with self._circulating(False):
+            self.mqtt.record_water_reading(11.0)  # at rest: between alert and cutoff
+        self.assertFalse(state_lib.load_state()["pump_blocked"])
+        with self._circulating(True):
+            self.mqtt.record_water_reading(13.73)  # mid-run dip past the cutoff
+        state = state_lib.load_state()
+        self.assertFalse(state["pump_blocked"], "a mid-run dip must not become the verdict")
+        self.assertEqual(state["water_airgap_cm"], 13.73, "the reading itself is still recorded")
+        self.assertTrue(state["water_checked_at"], "and stays fresh for the cleaning guard")
+
     def test_evaluate_water_low_publishes_the_blocked_state(self):
         it = iter([13.73] * 5)
         reads = mock.patch.object(self.mqtt, "safe_distance_measure", side_effect=lambda: next(it))

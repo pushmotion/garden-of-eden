@@ -1,4 +1,5 @@
 import argparse
+import sys
 
 import pigpio
 from gpiozero import PWMLED
@@ -153,9 +154,26 @@ if __name__ == "__main__":
     from app.lib.locking import file_lock
     from app.lib.water_guard import pump_allowed
 
+    def guard_allows():
+        """The dry-run verdict, failing open the way ``water_guard.main`` does.
+
+        ``bin/water.sh`` has already consulted the guard through a catch-all that
+        allows the run on any exception. This second look must not be stricter
+        than the first: a corrupt state file or a PermissionError here was the
+        one path that could still refuse to water.
+        """
+        try:
+            return pump_allowed()[0]
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see above
+            print(f"water guard failed ({exc!r}); allowing the run", file=sys.stderr)
+            return True
+
+    # "Off" is always allowed and never guarded, however it is spelled.
+    wants_off = args.off or args.speed == 0
+
     with file_lock(config.STATE_FILE + ".pump.lock"):
         pump = Pump(pin_factory=pin_factory)  # pins/frequency from config
-        if args.off:
+        if wants_off:
             if args.stop_cleaning:
                 from app.lib import state
                 from app.lib.light_schedule import restore
@@ -173,7 +191,7 @@ if __name__ == "__main__":
         elif args.on or args.speed is not None:
             if cleaning_lib.is_active():
                 print("Cleaning owns the pump; ordinary command skipped")
-            elif not args.override_low_water_level and not pump_allowed()[0]:
+            elif not args.override_low_water_level and not guard_allows():
                 raise SystemExit("Pump refused: water below cutoff")
             else:
                 if args.speed is not None:

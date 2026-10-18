@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
-from app.lib.water import is_reading_fresh, is_water_low, pump_cutoff
+from app.lib.water import is_plausible_airgap, is_reading_fresh, is_water_low, pump_cutoff
 
 
 class PumpCutoffResolutionTestCase(unittest.TestCase):
@@ -32,14 +32,39 @@ class PumpCutoffResolutionTestCase(unittest.TestCase):
         """Someone may want the interlock and no alert at all."""
         self.assertEqual(pump_cutoff(15.5, None), 15.5)
 
-    def test_an_inverted_pair_falls_back_to_the_alert(self):
-        """A cutoff must sit at a larger airgap than the alert.
+    def test_an_inverted_pair_keeps_the_earlier_trip(self):
+        """When the pair is inverted the smaller airgap -- more water -- wins.
 
-        Otherwise the pump stops before the user is ever told the tank is low --
-        watering silently ceases with no warning shown anywhere. Falling back to
-        the alert keeps the earlier, safer of the two.
+        This used to fall back to the alert. On 2026-09-21 an alert persisted
+        from Home Assistant at 25 cm, past the 23.05 cm tank floor, became the
+        effective cutoff that way: no reading could exceed it and the dry-run
+        interlock was silently gone. "Watering Blocked" now tells the user when
+        the pump stops, so the earlier trip is the safe choice.
         """
-        self.assertEqual(pump_cutoff(9.0, 11.0), 11.0)
+        self.assertEqual(pump_cutoff(9.0, 11.0), 9.0)
+
+    def test_a_cutoff_past_the_tank_floor_is_pulled_back_to_the_min_depth(self):
+        """The incident: alert 25.0 persisted, cutoff 12.89, floor 23.05."""
+        self.assertEqual(pump_cutoff(None, 25.0, 23.05, 5.0), 18.05)
+        self.assertEqual(pump_cutoff(25.0, 9.1, 23.05, 5.0), 18.05)
+        self.assertEqual(pump_cutoff(30.0, None, 23.05, 5.0), 18.05)
+
+    def test_a_cutoff_inside_the_tank_is_left_alone(self):
+        self.assertEqual(pump_cutoff(17.6, 13.0, 23.05, 5.0), 17.6)
+        self.assertEqual(pump_cutoff(15.5, 11.0, 20.0, 5.0), 15.5)
+
+    def test_implausible_airgaps_are_not_readings(self):
+        """gpiozero saturates at 1 m: a missing echo is exactly 100.00 cm."""
+        self.assertFalse(is_plausible_airgap(100.0, 23.05))
+        self.assertFalse(is_plausible_airgap(100.0, None))
+        self.assertFalse(is_plausible_airgap(40.0, 23.05), "no tank floor is 17 cm below the floor")
+        self.assertFalse(is_plausible_airgap(None, 23.05))
+        self.assertFalse(is_plausible_airgap(-1.0, 23.05))
+        self.assertTrue(
+            is_plausible_airgap(23.9, 23.05), "a hair past the floor is noise, not a fault"
+        )
+        self.assertTrue(is_plausible_airgap(4.5, 23.05))
+        self.assertTrue(is_plausible_airgap(0.0, 20.0))
 
     def test_the_split_leaves_a_band_that_warns_without_blocking(self):
         """The whole point: warn at 55%, keep watering until 30%.

@@ -21,7 +21,13 @@ from app.lib import state as state_lib
 from app.lib.hardware import current_duty_fraction, detect_model, get_pin_factory
 from app.lib.locking import file_lock, pump_locked
 from app.lib.logging_config import configure_logging
-from app.lib.water import gallons_from_state, is_water_low, pump_cutoff, tank_readings
+from app.lib.water import (
+    gallons_from_state,
+    is_plausible_airgap,
+    is_water_low,
+    pump_cutoff,
+    tank_readings,
+)
 from app.lib.water_guard import pump_allowed
 from app.sensors.camera import camera as camera_mod
 from app.sensors.distance.distance import Distance, MeasurementError
@@ -242,8 +248,22 @@ def _cancel_pump_safety():
             _pump_off_timer = None
 
 
-# Button press callbacks
+# Button press callbacks.
+#
+# These run on pigpio's notification thread (through gpiozero's when_pressed).
+# Neither library catches exceptions there, so one uncaught error kills the
+# thread for the shared pigpio connection -- after which the button *and* the
+# over-temperature edge alert go silent until the service restarts. A pump
+# locked by PUMP_MAINTENANCE raises RuntimeError on a double press, which was
+# enough to do it. Every toggle therefore catches and logs.
 def toggle_light():
+    try:
+        _toggle_light()
+    except Exception:
+        logger.exception("Button light toggle failed")
+
+
+def _toggle_light():
     global light_state
     light_state = not light_state
     if light_state:
@@ -257,8 +277,15 @@ def toggle_light():
     state_lib.save_state(light_on=light_state, brightness=brightness)
 
 
-@pump_locked
 def toggle_pump():
+    try:
+        _toggle_pump()
+    except Exception:
+        logger.exception("Button pump toggle failed")
+
+
+@pump_locked
+def _toggle_pump():
     global pump_state
     # The pump is already running during a clean, so a double-press means "make
     # it stop" -- and that has to end the *session*, not just the motor. Turning
@@ -378,11 +405,28 @@ def measure_distance_median(samples=5):
     failed.
     """
     readings = []
+    implausible = []
     for _ in range(samples):
         d = safe_distance_measure()
-        if d is not None:
+        if d is None:
+            pass
+        elif is_plausible_airgap(d, WATER_EMPTY_CM):
             readings.append(d)
+        else:
+            implausible.append(d)
         sleep(0.06)
+    if implausible:
+        # A missing echo saturates gpiozero's range and reads as exactly 100.00
+        # cm; a dead echo line or a tank pulled out does the same. None of these
+        # is a depth, and recording one as a *dry tank* refused watering on the
+        # one hardware fault the guard is documented to fail open on. Dropped
+        # here, they leave the verdict stale, which is the fail-open path.
+        logger.warning(
+            "Ignoring %d implausible distance reading(s) %s (tank floor %.2f cm)",
+            len(implausible),
+            implausible,
+            WATER_EMPTY_CM,
+        )
     if not readings:
         return None
     readings.sort()
@@ -395,17 +439,30 @@ _water_low_streak = 0
 
 
 def evaluate_water_low(client):
-    """Read the tank (spike-rejected) and publish a debounced low-water state."""
+    """Read the tank (spike-rejected) and publish a debounced low-water state.
+
+    The reading is recorded and the pump verdict published whether or not the
+    *alert* is configured. This used to return before either when the alert was
+    disabled, so ``WATER_LOW_CM=0`` (or the HA number dragged to 0) quietly
+    starved the state file: the cron guard saw only stale verdicts and failed
+    open on every run, "Watering Blocked" froze on its retained value, and
+    cleaning -- which fails closed -- was refused outright.
+    """
     global _water_low_streak
-    if WATER_LOW_CM in (None, 0):
+    alert_enabled = WATER_LOW_CM not in (None, 0)
+    if not alert_enabled:
         _water_low_streak = 0
         client.publish(BASE_TOPIC + "/water/low/state", "OFF", retain=True)
-        return None
 
     distance = measure_distance_median()
     if distance is None:
         logger.warning("Skipping water-low update: distance reading failed")
         return None
+
+    if not alert_enabled:
+        record_water_reading(distance)
+        publish_watering_blocked(client, distance)
+        return distance
 
     if is_water_low(distance, WATER_LOW_CM):
         _water_low_streak += 1
@@ -500,8 +557,31 @@ def sync_watering_skipped(client, last_seen):
 
 
 def effective_pump_cutoff():
-    """The airgap at which the pump is refused (falls back to the alert)."""
-    return pump_cutoff(PUMP_CUTOFF_CM, WATER_LOW_CM)
+    """The airgap at which the pump is refused (falls back to the alert).
+
+    Bounded by the tank floor: see ``app.lib.water.pump_cutoff``.
+    """
+    return pump_cutoff(PUMP_CUTOFF_CM, WATER_LOW_CM, WATER_EMPTY_CM, config.CLEANING_MIN_DEPTH_CM)
+
+
+def water_threshold_max():
+    """Largest airgap the Home Assistant threshold control may ask for.
+
+    An alert set past the tank floor is not a threshold, it is "never"; and when
+    the pump cutoff is unset the alert *is* the interlock.
+    """
+    if WATER_EMPTY_CM and WATER_EMPTY_CM > 0:
+        return WATER_EMPTY_CM
+    return 25.0
+
+
+def valid_water_threshold(value):
+    """True for a finite airgap between 0 and the tank floor."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    return value == value and 0 <= value <= water_threshold_max()
 
 
 def record_water_reading(distance):
@@ -518,11 +598,23 @@ def record_water_reading(distance):
     forever.
     """
     cutoff = effective_pump_cutoff()
+    blocked = bool(is_water_low(distance, cutoff))
     try:
+        if _pump_is_circulating():
+            # Same hold as publish_watering_blocked: a run lifts ~0.45 gal up the
+            # tower, so the level crosses the cutoff mid-run on a tank that is
+            # fine at rest. The entity already held its value; the file the
+            # cron guard reads did not, so a scheduled run that followed a
+            # manual one inside the freshness window could be refused for it.
+            # The airgap and timestamp are still written: cleaning's own guard
+            # needs the freshness, and it compares against its own cutoff.
+            previous = state_lib.load_state().get("pump_blocked")
+            if previous is not None:
+                blocked = bool(previous)
         state_lib.save_state(
             water_airgap_cm=round(float(distance), 2),
             water_checked_at=datetime.now().isoformat(timespec="seconds"),
-            pump_blocked=bool(is_water_low(distance, cutoff)),
+            pump_blocked=blocked,
         )
     except Exception:
         logger.exception("Could not persist the water reading")
@@ -638,11 +730,16 @@ def restore_water_threshold():
     saved = state_lib.load_state().get("water_low_cm")
     if saved is None:
         return
-    try:
-        WATER_LOW_CM = float(saved)
-    except (TypeError, ValueError):
-        logger.warning("Ignoring unusable persisted water threshold: %r", saved)
+    if not valid_water_threshold(saved):
+        # A 25 cm alert persisted from HA once sat past the 23.05 cm tank floor
+        # and, through the cutoff fallback, switched the interlock off for good.
+        logger.warning(
+            "Ignoring unusable persisted water threshold %r (must be 0-%.2f cm)",
+            saved,
+            water_threshold_max(),
+        )
         return
+    WATER_LOW_CM = float(saved)
     logger.info("Restored the water-low threshold from state: %.2fcm", WATER_LOW_CM)
 
 
@@ -983,7 +1080,7 @@ def send_discovery_messages(client):
         "state_topic": BASE_TOPIC + "/water/low/cm",
         "command_topic": BASE_TOPIC + "/water/low/cm/set",
         "min": 0,
-        "max": 25,
+        "max": round(water_threshold_max(), 1),
         "step": 0.5,
         "unit_of_measurement": "cm",
         "device_class": "distance",
@@ -1911,6 +2008,12 @@ def on_message(client, userdata, msg):
 
         elif topic_suffix == "pump/speed/set" and payload.isdigit():
             requested = int(payload)
+            if requested > 100:
+                # Validate before touching the global: a stored 150 made every
+                # later ON command raise, and the button paths then died with it.
+                logger.error("Ignoring out-of-range pump speed %s", payload)
+                commit_pump_state(client)
+                return
             # The slider must honour the same dry-run guard as the power button.
             if requested > 0 and not water_ok_for_pump(client):
                 commit_pump_state(client)
@@ -1933,7 +2036,12 @@ def on_message(client, userdata, msg):
                 commit_light_state(client)
 
         elif topic_suffix == "light/brightness/set" and payload.isdigit():
-            brightness = int(payload)
+            requested = int(payload)
+            if requested > 100:
+                logger.error("Ignoring out-of-range brightness %s", payload)
+                commit_light_state(client)
+                return
+            brightness = requested
             light.set_duty_cycle(brightness)
             commit_light_state(client)
 
@@ -1948,8 +2056,25 @@ def on_message(client, userdata, msg):
             threading.Thread(target=refresh_all, args=(client,), daemon=True).start()
 
         elif topic_suffix == "water/low/cm/set":
-            try:
+            if not valid_water_threshold(payload):
+                # Past the tank floor, negative, or not a number: none of these
+                # is a threshold, and when the cutoff is unset this value *is*
+                # the interlock. Republish so the control snaps back.
+                logger.error(
+                    "Rejecting water low threshold %r (must be 0-%.2f cm)",
+                    payload,
+                    water_threshold_max(),
+                )
+                publish_water_thresholds(client)
+            else:
                 WATER_LOW_CM = float(payload)
+                if PUMP_CUTOFF_CM and WATER_LOW_CM > PUMP_CUTOFF_CM:
+                    logger.warning(
+                        "Water low alert %.2f cm is past the pump cutoff %.2f cm; "
+                        "the cutoff keeps the earlier trip",
+                        WATER_LOW_CM,
+                        PUMP_CUTOFF_CM,
+                    )
                 # Persist it, or the next restart silently reverts to the .env
                 # value while Home Assistant keeps showing this retained one --
                 # the dashboard and the running guard disagreeing with nothing
@@ -1958,8 +2083,6 @@ def on_message(client, userdata, msg):
                 publish_water_thresholds(client)
                 publish_water_low_mode(client)
                 update_water_low_state(client)
-            except ValueError:
-                logger.error(f"Invalid water low cm value: {payload}")
 
         # === Sensor Data on Request ===
         elif topic_suffix == "pcb/temperature/get":
@@ -2467,8 +2590,19 @@ def graceful_shutdown(signum, frame):
         logger.info("Shutting down mid-clean; the run resumes if the service returns in time")
     try:
         pump.off()
+        # The pump is off now, so say so: the reconcile loop records pump_on for
+        # *any* run it observes, cron's included, and restore_actuator_state
+        # would otherwise restart a stopped cron run as a fresh 300 s run on the
+        # next connect. A cleaning session keeps its own deadline (see above).
+        try:
+            state_lib.save_state(pump_on=False)
+        except Exception:
+            logger.exception("Could not record the pump as off at shutdown")
         pump.close()
-        light.close()
+        # Deliberately no light.close(): gpiozero writes 0 to the pin on close,
+        # so every `systemctl restart` switched the grow light off, and with the
+        # broker unreachable nothing switched it back on until the next cron
+        # edge. pigpiod keeps the duty cycle across our restarts; leave it.
     except Exception as exc:
         logger.error("Error during graceful shutdown: %s", exc)
     sys.exit(0)
@@ -2496,7 +2630,30 @@ if __name__ == "__main__":
     mqtt_log_handler.addFilter(lambda record: not record.name.startswith("paho"))
     logging.getLogger().addHandler(mqtt_log_handler)
 
-    client.connect(BROKER, PORT, KEEP_ALIVE_INTERVAL)
+    # Startup recovery runs *before* the broker is involved. It used to live in
+    # on_connect, so with Home Assistant's network unreachable the service
+    # crash-looped on connect() and nothing restored the light, replayed the
+    # schedule, or armed the pump cap and the cleaning backstop. HA is on a
+    # different network segment from the towers (DEPLOYMENT.md), so an
+    # unreachable broker is this deployment's ordinary failure, not a corner
+    # case. Publishes made before the connection simply go nowhere; on_connect
+    # republishes the real state once the broker answers.
+    restore_actuator_state(client)
+    apply_scheduled_state(client)
+
+    actuator_thread = threading.Thread(target=reconcile_actuator_state, args=(client,))
+    actuator_thread.daemon = True
+    actuator_thread.start()
+
+    # Keep trying rather than exit: a dead connect() left systemd restarting the
+    # process every few seconds with none of the protections above running.
+    while True:
+        try:
+            client.connect(BROKER, PORT, KEEP_ALIVE_INTERVAL)
+            break
+        except (OSError, ValueError) as exc:
+            logger.error("Broker %s:%s unreachable (%s); retrying in 30 s", BROKER, PORT, exc)
+            sleep(30)
 
     pcb_temp_thread = threading.Thread(target=publish_pcb_temperature, args=(client,))
     pcb_temp_thread.daemon = True
@@ -2522,17 +2679,7 @@ if __name__ == "__main__":
     grow_thread.daemon = True
     grow_thread.start()
 
-    actuator_thread = threading.Thread(target=reconcile_actuator_state, args=(client,))
-    actuator_thread.daemon = True
-
-    # Restore last known actuator state after (re)connect, then let the schedule
-    # override it -- cron-driven changes never reach the persisted state, so the
-    # schedule is the more trustworthy source for what should be on right now.
-    client.on_connect = lambda c, u, f, rc, properties=None: (
-        on_connect(c, u, f, rc, properties),
-        restore_actuator_state(c),
-        apply_scheduled_state(c),
-        actuator_thread.start() if actuator_thread.ident is None else None,
-    )
-
+    # Recovery ran once at startup, above. It is not repeated on reconnect: a
+    # broker blip must not re-arm the pump cap under a running HA-started run,
+    # nor re-assert the schedule over a manual light change.
     client.loop_forever()
