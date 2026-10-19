@@ -4,6 +4,24 @@ The distance sensor reports the gap (cm) from the sensor down to the water
 surface, so a *larger* distance means a *lower* tank.
 """
 
+from datetime import datetime, timezone
+
+
+def utc_now():
+    """The moment to stamp a reading with, and to judge one against."""
+    return datetime.now(timezone.utc)
+
+
+def as_utc(value):
+    """``value`` as an offset-aware UTC datetime.
+
+    A naive value is taken as local time: that is what every build before the
+    switch to UTC stamps wrote, and what a hand-edited file most likely holds.
+    """
+    if value.tzinfo is None:
+        value = value.astimezone()
+    return value.astimezone(timezone.utc)
+
 
 def is_water_low(distance_cm, threshold_cm):
     """Return True if the tank is low.
@@ -81,22 +99,27 @@ def is_reading_fresh(checked_at_iso, now, max_age_seconds):
     Unparseable or missing timestamps are *not* fresh, so a corrupt state file
     fails open (the pump still runs) rather than bricking watering.
 
-    ``now`` is naive local time. The service writes naive timestamps too, but an
-    offset-aware one (a hand-edited file, or some future writer) must not raise
-    -- subtracting mixed datetimes is a TypeError, and an exception here fails
-    *closed*, which is the one outcome this module exists to avoid. Aware values
-    are converted to local naive first.
+    The comparison is made in UTC. The service stamps readings with
+    offset-aware UTC; a naive stamp (an older build, or a hand edit) and a
+    naive ``now`` are read as local time. Local time is not safe to compare
+    on its own: the hour after a DST fall-back repeats, so a reading taken at
+    01:50 EDT judged at 01:05 EST looked forty-five minutes in the future and
+    was rejected as stale for the whole hour -- watering failed open and
+    cleaning failed closed -- while a spring-forward made a reading an hour
+    younger than it was. UTC has no repeated or skipped hour.
+
+    Mixed aware and naive values must never raise: subtracting them is a
+    TypeError, and an exception here fails *closed*, the one outcome this
+    module exists to avoid. A negative age is still not fresh. A clock stepped
+    back by NTP after a reading was stamped must not make that reading look
+    authoritative.
     """
     if not checked_at_iso:
         return False
     try:
-        from datetime import datetime
-
-        checked = datetime.fromisoformat(str(checked_at_iso))
-        if checked.tzinfo is not None:
-            checked = checked.astimezone().replace(tzinfo=None)
-        age = (now - checked).total_seconds()
-    except (TypeError, ValueError, OverflowError, OSError):
+        checked = as_utc(datetime.fromisoformat(str(checked_at_iso)))
+        age = (as_utc(now) - checked).total_seconds()
+    except (AttributeError, TypeError, ValueError, OverflowError, OSError):
         return False
     return 0 <= age <= max_age_seconds
 

@@ -10,6 +10,7 @@ import json
 import os
 
 import config
+from app.lib.locking import file_lock
 from app.lib.persist import write_json_atomic
 
 _CATALOG_PATH = os.path.join(os.path.dirname(__file__), "plants.json")
@@ -65,21 +66,35 @@ def load_pods():
         return default_pods()
 
 
+def _locked():
+    """The lock every write of the pods file runs under.
+
+    ``set_pod`` reads all thirty pods, changes one and writes them all back;
+    two of those from separate processes (the web UI saving pod 3 while the
+    desktop app saves pod 7) used to lose one of the edits. Same mechanism as
+    ``app.lib.state``, on a lock file beside this one, and never nested around
+    any other lock.
+    """
+    return file_lock(config.PODS_FILE + ".lock")
+
+
 def save_pods(pods):
     normalized = normalize(pods)
-    write_json_atomic(config.PODS_FILE, normalized)
+    with _locked():
+        write_json_atomic(config.PODS_FILE, normalized)
     return normalized
 
 
 def set_pod(pod_id, name=None, symbols=None):
     """Update a single pod's name and/or symbols; returns the full pod list."""
     pod_id = int(pod_id)
-    pods = load_pods()
-    for pod in pods:
-        if pod["id"] == pod_id:
-            if name is not None:
-                pod["name"] = str(name)[:MAX_NAME]
-            if symbols is not None:
-                pod["symbols"] = [s for s in symbols if s in SHAPES][:MAX_SYMBOLS]
-            break
-    return save_pods(pods)
+    with _locked():
+        pods = load_pods()
+        for pod in pods:
+            if pod["id"] == pod_id:
+                if name is not None:
+                    pod["name"] = str(name)[:MAX_NAME]
+                if symbols is not None:
+                    pod["symbols"] = [s for s in symbols if s in SHAPES][:MAX_SYMBOLS]
+                break
+        return save_pods(pods)

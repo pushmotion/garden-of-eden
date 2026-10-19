@@ -64,7 +64,10 @@ VERSION = os.getenv("MQTT_VERSION", "1.0.0")
 # so the old "gardyn-xx" default published to `gardyn-xx/...` while HA showed
 # `sensor.gardyn_xx_...`, quietly disagreeing with itself.
 IDENTIFIER = os.getenv("MQTT_IDENTIFIER", "gardyn_01")
-MODEL = os.getenv("MQTT_DEVICE_MODEL", "gardyn 3.0")
+# The model label detect_model() falls back to when nothing on the bus says
+# which generation this is. No generation in the default: "gardyn 3.0" used to
+# be claimed for any tower detection could not place, a 1.0 included.
+MODEL = os.getenv("MQTT_DEVICE_MODEL", "gardyn")
 # Defaults to the identifier so each tower gets its own topic namespace. A
 # shared base topic is not cosmetic: mqtt.py subscribes to BASE_TOPIC + "/#",
 # so two units on the same one receive each other's commands and one tower's
@@ -266,6 +269,14 @@ WATER_READING_MAX_AGE_SECONDS = _get_int("WATER_READING_MAX_AGE_SECONDS", WATER_
 # the hardware without going through the MQTT service, so without polling Home
 # Assistant drifts out of step with reality. 0 disables the poll.
 ACTUATOR_POLL_SECONDS = _get_int("ACTUATOR_POLL_SECONDS", 15)
+
+# How often (seconds) the MQTT service publishes the slow telemetry: ambient
+# temperature and humidity, PCB temperature, and the grow-cycle reminders.
+# These move slowly, and each ambient read is a bus transaction the AM2320/
+# DHT20 occasionally answers with the wrong value (app/lib/ambient.py), so the
+# default is half an hour rather than the water poll's three minutes. One value
+# for every loop: three of them used to sleep a hard-coded 30 * 60.
+TELEMETRY_INTERVAL_SECONDS = _get_int("TELEMETRY_INTERVAL_SECONDS", 1800)
 
 # Which unit system clients should display by default: "metric" (cm, C, L) or
 # "imperial" (in, F, gal). This is a *presentation* default only -- the tower

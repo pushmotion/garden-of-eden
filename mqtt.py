@@ -68,6 +68,7 @@ from config import (
     PUMP_CUTOFF_CM,
     SUGGESTED_AREA,
     TANK_CAPACITY_GALLONS,
+    TELEMETRY_INTERVAL_SECONDS,
     UPPER_CAMERA_DEVICE,
     UPPER_IMAGE_PATH,
     USERNAME,
@@ -121,11 +122,12 @@ except Exception:
 # here as well as in the persisted-state defaults.
 brightness = DEFAULT_BRIGHTNESS
 speed = DEFAULT_PUMP_SPEED
-sec_per_min = 60
-min_per_hr = 60
 
-# publish twice an hour
-publish_frequency = sec_per_min * min_per_hr / 2
+# Cadence of the slow telemetry loops (ambient temperature, humidity, PCB
+# temperature, grow reminders). One config value so the four cannot drift
+# apart: three of them slept a hard-coded 30 * 60 while this held the same
+# number and only the grow loop read it.
+publish_frequency = TELEMETRY_INTERVAL_SECONDS
 
 # Button GPIO setup using gpiozero
 button_pin = BUTTON_PIN
@@ -166,6 +168,14 @@ double_press_timer = None
 AVAILABILITY_TOPIC = BASE_TOPIC + "/availability"
 LOG_TOPIC = BASE_TOPIC + "/log"
 
+# Home Assistant's MQTT reset sentinel (homeassistant/components/mqtt/const.py,
+# PAYLOAD_NONE): a number or sensor that receives it reads *unknown*. The
+# literal "unavailable" sent before was no sentinel at all -- "unavailable" is a
+# state HA derives from the availability topic, never a payload it accepts. A
+# number entity could not parse it, and the timestamp sensors logged an
+# invalid-state warning on every publish while the schedule was empty.
+PAYLOAD_NONE = "None"
+
 # Pump safety: never let the pump run longer than the hard cap, no matter how it
 # was turned on (HA command or physical button). Mirrors the REST API watchdog.
 _pump_off_timer = None
@@ -174,15 +184,12 @@ _pump_timer_lock = threading.Lock()
 
 @pump_locked
 def _safety_pump_off():
-    global pump_state
     if cleaning_lib.is_active():
         return
     logger.warning("Pump safety cap (%ss) reached; forcing pump OFF", MAX_PUMP_RUN_SECONDS)
     try:
         pump.off()
-        pump_state = False
-        client.publish(BASE_TOPIC + "/pump/state", "OFF")
-        state_lib.save_state(pump_on=False, speed=speed)
+        commit_pump_state(client)
     except Exception as exc:
         logger.error("Safety pump-off failed: %s", exc)
 
@@ -264,17 +271,18 @@ def toggle_light():
 
 
 def _toggle_light():
-    global light_state
-    light_state = not light_state
+    # Reported through commit_light_state like the MQTT command path: it
+    # publishes state *and* brightness, retained, and syncs the toggle flag
+    # from the real duty cycle. The button used to publish a bare, unretained
+    # "ON"/"OFF" and never the brightness, so Home Assistant showed a light at
+    # the old level -- or, after its own restart, no state at all.
     if light_state:
-        logger.info("Toggling Light ON")
-        light.set_duty_cycle(brightness)
-        client.publish(BASE_TOPIC + "/light/state", "ON")
-    else:
         logger.info("Toggling Light OFF")
         light.off()
-        client.publish(BASE_TOPIC + "/light/state", "OFF")
-    state_lib.save_state(light_on=light_state, brightness=brightness)
+    else:
+        logger.info("Toggling Light ON")
+        light.set_duty_cycle(brightness)
+    commit_light_state(client)
 
 
 def toggle_pump():
@@ -286,7 +294,7 @@ def toggle_pump():
 
 @pump_locked
 def _toggle_pump():
-    global pump_state
+    global speed
     # The pump is already running during a clean, so a double-press means "make
     # it stop" -- and that has to end the *session*, not just the motor. Turning
     # the pump off under a live session would leave the watchdog holding the
@@ -294,22 +302,25 @@ def _toggle_pump():
     if cleaning_lib.is_active():
         logger.info("Button pressed during a cleaning run; ending it")
         stop_cleaning(cleaning_lib.DONE_STOPPED)
-        pump_state = False
-        client.publish(BASE_TOPIC + "/pump/state", "OFF")
+        commit_pump_state(client)
         publish_cleaning_state(client)
         return
-    pump_state = not pump_state
     if pump_state:
-        logger.info("Toggling Pump ON")
-        pump.set_speed(speed)
-        _arm_pump_safety()
-        client.publish(BASE_TOPIC + "/pump/state", "ON")
-    else:
         logger.info("Toggling Pump OFF")
         pump.off()
         _cancel_pump_safety()
-        client.publish(BASE_TOPIC + "/pump/state", "OFF")
-    state_lib.save_state(pump_on=pump_state, speed=speed)
+    else:
+        logger.info("Toggling Pump ON")
+        if speed <= 0:
+            # The same guard as the MQTT command path. A slider move to 0
+            # followed by a double press used to publish ON, arm the cap and
+            # leave the pump at 0%: a run that never happened, reported as one.
+            speed = DEFAULT_PUMP_SPEED
+        pump.set_speed(speed)
+        _arm_pump_safety()
+    # Publishes state and speed retained, syncs the toggle flag from the real
+    # duty cycle and persists for power-loss recovery -- see _toggle_light.
+    commit_pump_state(client)
 
 
 def handle_button_press():
@@ -639,9 +650,13 @@ def record_water_reading(distance):
             previous = state_lib.load_state().get("pump_blocked")
             if previous is not None:
                 blocked = bool(previous)
+        # Stamped in UTC with its offset. A naive local stamp was unreadable
+        # for the hour after a DST fall-back -- every reading in it looked
+        # like the future, so watering failed open and cleaning failed closed
+        # -- and the guards judge it in UTC now (app.lib.water).
         state_lib.save_state(
             water_airgap_cm=round(float(distance), 2),
-            water_checked_at=datetime.now().isoformat(timespec="seconds"),
+            water_checked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             pump_blocked=blocked,
         )
     except Exception:
@@ -703,13 +718,18 @@ def publish_water_readings(client, distance):
     """
     readings = tank_readings(distance, WATER_FULL_CM, WATER_EMPTY_CM, TANK_CAPACITY_GALLONS)
 
-    client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}")
+    # Retained, like every other telemetry topic: Home Assistant drops its
+    # MQTT state on restart and would otherwise show every one of these as
+    # unknown until the next poll -- up to TELEMETRY_INTERVAL_SECONDS for the
+    # ambient readings. The availability topic greys them out when the service
+    # is actually gone, so a retained last value never masquerades as live.
+    client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}", retain=True)
     if readings["depth_cm"] is not None:
-        client.publish(BASE_TOPIC + "/water/depth", f"{readings['depth_cm']:.2f}")
+        client.publish(BASE_TOPIC + "/water/depth", f"{readings['depth_cm']:.2f}", retain=True)
     if readings["percent"] is not None:
-        client.publish(BASE_TOPIC + "/water/percent", f"{readings['percent']:.0f}")
+        client.publish(BASE_TOPIC + "/water/percent", f"{readings['percent']:.0f}", retain=True)
     if readings["gallons"] is not None:
-        client.publish(BASE_TOPIC + "/water/gallons", f"{readings['gallons']:.1f}")
+        client.publish(BASE_TOPIC + "/water/gallons", f"{readings['gallons']:.1f}", retain=True)
     publish_grow_state(client)
 
 
@@ -782,19 +802,19 @@ def publish_water_thresholds(client):
     same reason "Max Pump Run Time" does: it is a safety limit, not a per-run
     setting. Seeing it matters; nudging it from a phone does not.
     """
-    # "unavailable" rather than silence when alerting is off: Home Assistant
-    # greys the control out, which says "this does nothing right now". Publishing
-    # nothing leaves it blank forever, indistinguishable from a service that
-    # never started.
+    # The reset sentinel rather than silence when alerting is off: Home
+    # Assistant shows the control as unknown, which says "this does nothing
+    # right now". Publishing nothing leaves it blank forever, indistinguishable
+    # from a service that never started.
     client.publish(
         BASE_TOPIC + "/water/low/cm",
-        f"{WATER_LOW_CM:.2f}" if WATER_LOW_CM else "unavailable",
+        f"{WATER_LOW_CM:.2f}" if WATER_LOW_CM else PAYLOAD_NONE,
         retain=True,
     )
     cutoff = effective_pump_cutoff()
     client.publish(
         BASE_TOPIC + "/water/pump/cutoff",
-        f"{cutoff:.2f}" if cutoff else "unavailable",
+        f"{cutoff:.2f}" if cutoff else PAYLOAD_NONE,
         retain=True,
     )
 
@@ -1642,7 +1662,7 @@ def publish_one_time_state(client):
             BASE_TOPIC + "/schedule/pump/max_seconds", str(MAX_PUMP_RUN_SECONDS), retain=True
         )
         pending = sched_lib.one_time_pump_runs()
-        payload = pending[0]["at"].astimezone().isoformat() if pending else "unavailable"
+        payload = pending[0]["at"].astimezone().isoformat() if pending else PAYLOAD_NONE
         client.publish(BASE_TOPIC + "/schedule/pump/once/next", payload, retain=True)
     except Exception:
         logger.exception("Error publishing one-time pump run state")
@@ -1699,7 +1719,7 @@ def publish_cleaning_state(client):
         cutoff = status["cutoff_cm"]
         client.publish(
             BASE_TOPIC + "/pump/clean/cutoff",
-            f"{cutoff:.2f}" if cutoff else "unavailable",
+            f"{cutoff:.2f}" if cutoff else PAYLOAD_NONE,
             retain=True,
         )
     except Exception:
@@ -1833,13 +1853,13 @@ def arm_one_time_pump_run(client):
 def _next_pump_payload():
     """The next scheduled pump run as ISO 8601 with a UTC offset, which is what
     Home Assistant's timestamp device_class needs to render a relative time
-    ("in 2 hours"). "unavailable" when the pump schedule is off or empty."""
+    ("in 2 hours"). The reset sentinel when the pump schedule is off or empty."""
     try:
         upcoming = sched_lib.next_pump_run(sched_lib.load_schedule())
     except Exception:
         logger.exception("Error computing the next pump run")
-        return "unavailable"
-    return upcoming.astimezone().isoformat() if upcoming else "unavailable"
+        return PAYLOAD_NONE
+    return upcoming.astimezone().isoformat() if upcoming else PAYLOAD_NONE
 
 
 def publish_next_pump_run(client):
@@ -1857,11 +1877,17 @@ def _apply_schedule(client, schedule):
     publish_schedule_state(client)
 
 
+# Each setter below loads the saved schedule, edits it and applies it. The
+# whole sequence runs under the schedule lock, which the REST API's apply and
+# the nightly refresh also take, so a write from another process cannot land
+# between the load and the apply and be silently overwritten. The lock is taken
+# inside the pump lock on_message already holds, never the other way round.
 def _set_schedule_flag(client, section, enabled):
     """Flip a top-level schedule enable flag, rewrite crontab, and republish state."""
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    schedule[section]["enabled"] = enabled
-    _apply_schedule(client, schedule)
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        schedule[section]["enabled"] = enabled
+        _apply_schedule(client, schedule)
 
 
 def _set_light_brightness(client, brightness):
@@ -1871,20 +1897,23 @@ def _set_light_brightness(client, brightness):
     window rather than a description of the day, so it applies to all of them
     and the window count is untouched.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    touched = 0
-    for day in sched_lib.DAYS:
-        for window in schedule["lights"]["days"][day]:
-            window["brightness"] = brightness
-            touched += 1
-    if not touched:
-        # Nothing scheduled yet, so seed a window per day rather than doing nothing.
-        seed = _everyday_light(schedule)
-        seed["brightness"] = brightness
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        touched = 0
         for day in sched_lib.DAYS:
-            schedule["lights"]["days"][day] = [dict(seed)]
-    logger.info("Set light brightness to %s%% across %s existing window(s)", brightness, touched)
-    _apply_schedule(client, schedule)
+            for window in schedule["lights"]["days"][day]:
+                window["brightness"] = brightness
+                touched += 1
+        if not touched:
+            # Nothing scheduled yet, so seed a window per day rather than doing nothing.
+            seed = _everyday_light(schedule)
+            seed["brightness"] = brightness
+            for day in sched_lib.DAYS:
+                schedule["lights"]["days"][day] = [dict(seed)]
+        logger.info(
+            "Set light brightness to %s%% across %s existing window(s)", brightness, touched
+        )
+        _apply_schedule(client, schedule)
 
 
 def _set_light_first_window(client, **changes):
@@ -1896,18 +1925,19 @@ def _set_light_first_window(client, **changes):
     Moving one window is a predictable, reversible edit; collapsing the day to
     it is not.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    # Resolved once: appending to an empty day would otherwise change what the
-    # representative window is for the days after it.
-    seed = _everyday_light(schedule)
-    for day in sched_lib.DAYS:
-        windows = schedule["lights"]["days"][day]
-        if windows:
-            windows[0].update(changes)
-        else:
-            windows.append({**seed, **changes})
-    logger.info("Updated the first light window of each day: %s", changes)
-    _apply_schedule(client, schedule)
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        # Resolved once: appending to an empty day would otherwise change what
+        # the representative window is for the days after it.
+        seed = _everyday_light(schedule)
+        for day in sched_lib.DAYS:
+            windows = schedule["lights"]["days"][day]
+            if windows:
+                windows[0].update(changes)
+            else:
+                windows.append({**seed, **changes})
+        logger.info("Updated the first light window of each day: %s", changes)
+        _apply_schedule(client, schedule)
 
 
 def _set_pump_duration(client, minutes):
@@ -1918,18 +1948,19 @@ def _set_pump_duration(client, minutes):
     seven 3-minute runs became one. This keeps every run and changes only how
     long each lasts, which is what the control appears to promise.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    touched = 0
-    for day in sched_lib.DAYS:
-        for run in schedule["pump"]["days"][day]:
-            run["duration"] = minutes
-            touched += 1
-    if not touched:
-        # Nothing scheduled yet, so seed a run per day rather than doing nothing.
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        touched = 0
         for day in sched_lib.DAYS:
-            schedule["pump"]["days"][day] = [{"time": "12:00", "duration": minutes}]
-    logger.info("Set pump duration to %s min across %s existing run(s)", minutes, touched)
-    _apply_schedule(client, schedule)
+            for run in schedule["pump"]["days"][day]:
+                run["duration"] = minutes
+                touched += 1
+        if not touched:
+            # Nothing scheduled yet, so seed a run per day rather than doing nothing.
+            for day in sched_lib.DAYS:
+                schedule["pump"]["days"][day] = [{"time": "12:00", "duration": minutes}]
+        logger.info("Set pump duration to %s min across %s existing run(s)", minutes, touched)
+        _apply_schedule(client, schedule)
 
 
 def _set_pump_first_time(client, hhmm):
@@ -1938,15 +1969,16 @@ def _set_pump_first_time(client, hhmm):
     A single scalar cannot express a multi-run day. Moving one run is a
     predictable, reversible edit; collapsing the day to it is not.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    for day in sched_lib.DAYS:
-        runs = schedule["pump"]["days"][day]
-        if runs:
-            runs[0]["time"] = hhmm
-        else:
-            runs.append({"time": hhmm, "duration": sched_lib.default_pump_duration(schedule)})
-    logger.info("Moved the first pump run of each day to %s", hhmm)
-    _apply_schedule(client, schedule)
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        for day in sched_lib.DAYS:
+            runs = schedule["pump"]["days"][day]
+            if runs:
+                runs[0]["time"] = hhmm
+            else:
+                runs.append({"time": hhmm, "duration": sched_lib.default_pump_duration(schedule)})
+        logger.info("Moved the first pump run of each day to %s", hhmm)
+        _apply_schedule(client, schedule)
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -2117,21 +2149,21 @@ def on_message(client, userdata, msg):
         # === Sensor Data on Request ===
         elif topic_suffix == "pcb/temperature/get":
             pcb_temp = get_pcb_temperature()
-            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}")
+            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}", retain=True)
 
         elif topic_suffix == "temperature/get":
             temperature = temperature_sensor.read()
-            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}")
+            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}", retain=True)
 
         elif topic_suffix == "humidity/get":
             humidity = humidity_sensor.read()
-            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}")
+            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}", retain=True)
 
         # === Grow cycle (HA control) ===
         elif topic_suffix == "grow/stage/set":
-            grow_state = grow_lib.load_state()
-            grow_lib.set_stage(grow_state, payload)
-            grow_lib.save_state(grow_state)
+            # Load-modify-save under the grow file's own lock: the REST API
+            # edits the same file from another process.
+            grow_lib.change_stage(payload)
             publish_grow_state(client)
 
         elif topic_suffix == "grow/start/set":
@@ -2143,9 +2175,7 @@ def on_message(client, userdata, msg):
             # payload_press. Republishing includes grow/food, so the alarm
             # clears in the same round trip rather than waiting for the
             # half-hourly reminder thread.
-            grow_state = grow_lib.load_state()
-            grow_lib.acknowledge(grow_state, payload)
-            grow_lib.save_state(grow_state)
+            grow_lib.acknowledge_reminder(payload)
             logger.info("Acknowledged grow reminder: %s", payload)
             publish_grow_state(client)
 
@@ -2218,13 +2248,13 @@ def publish_pcb_temperature(client):
         try:
             pcb_temp = get_pcb_temperature()
             logger.info(f"Publishing PCB Temperature: {pcb_temp:.2f}°C")
-            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}")
+            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}", retain=True)
             # The pin's own edges publish immediately; this is the periodic
             # resync, so a missed edge cannot leave HA stuck on a stale state.
             publish_over_temp_state(client)
         except Exception as e:
             logger.error(f"Failed to read or publish PCB temperature: {e}")
-        sleep(30 * 60)  # Publish frequency, every x seconds
+        sleep(publish_frequency)
 
 
 def publish_temperature(client):
@@ -2232,10 +2262,10 @@ def publish_temperature(client):
         try:
             temperature = temperature_sensor.read()
             logger.info(f"Publishing Temperature: {temperature:.2f}°C")
-            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}")
+            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}", retain=True)
         except Exception as e:
             logger.error(f"Failed to read or publish ambient temperature: {e}")
-        sleep(30 * 60)  # Publish frequency, every x seconds
+        sleep(publish_frequency)
 
 
 def publish_humidity(client):
@@ -2243,10 +2273,10 @@ def publish_humidity(client):
         try:
             humidity = humidity_sensor.read()
             logger.info(f"Publishing Humidity: {humidity:.2f}%")
-            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}")
+            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}", retain=True)
         except Exception as e:
             logger.error(f"Failed to read or publish ambient humidity: {e}")
-        sleep(30 * 60)  # Publish frequency, every x seconds
+        sleep(publish_frequency)
 
 
 def publish_water_level(client):
@@ -2311,16 +2341,22 @@ def refresh_all(client):
         ("water low state", lambda: update_water_low_state(client)),
         (
             "pcb temperature",
-            lambda: client.publish(BASE_TOPIC + "/pcb/temperature", f"{get_pcb_temperature():.2f}"),
+            lambda: client.publish(
+                BASE_TOPIC + "/pcb/temperature", f"{get_pcb_temperature():.2f}", retain=True
+            ),
         ),
         ("pcb over-temp state", lambda: publish_over_temp_state(client)),
         (
             "temperature",
-            lambda: client.publish(BASE_TOPIC + "/temperature", f"{temperature_sensor.read():.2f}"),
+            lambda: client.publish(
+                BASE_TOPIC + "/temperature", f"{temperature_sensor.read():.2f}", retain=True
+            ),
         ),
         (
             "humidity",
-            lambda: client.publish(BASE_TOPIC + "/humidity", f"{humidity_sensor.read():.2f}"),
+            lambda: client.publish(
+                BASE_TOPIC + "/humidity", f"{humidity_sensor.read():.2f}", retain=True
+            ),
         ),
         ("light state", lambda: publish_light_state(client)),
         ("pump state", lambda: publish_pump_state(client)),
@@ -2361,15 +2397,17 @@ def publish_images(client):
 @pump_locked
 def restore_actuator_state(client):
     """Restore light/pump to their last persisted state after a restart (#3)."""
-    global light_state, pump_state, brightness, speed
+    global pump_state, brightness, speed
     saved = state_lib.load_state()
     brightness = saved.get("brightness", brightness)
     speed = saved.get("speed", speed)
     try:
         if saved.get("light_on"):
-            light_state = True
             light.set_duty_cycle(brightness)
-            client.publish(BASE_TOPIC + "/light/state", "ON")
+            # Retained state plus brightness, and the toggle flag synced from
+            # the pin: a bare unretained "ON" left HA on the old level and left
+            # it with nothing at all after its own restart.
+            commit_light_state(client)
 
         # A cleaning run that still has time left is restored *as a cleaning
         # run*, before the ordinary pump restore below gets a chance to arm the
@@ -2384,7 +2422,7 @@ def restore_actuator_state(client):
         if resumed is not None:
             pump_state = True
             pump.set_speed(resumed["speed"])
-            client.publish(BASE_TOPIC + "/pump/state", "ON")
+            publish_pump_state(client)
             publish_cleaning_state(client)
             logger.info("Restored actuator state mid-clean: %s", saved)
             return
@@ -2393,10 +2431,9 @@ def restore_actuator_state(client):
             pump_state = False
             return
         if saved.get("pump_on") and pump_allowed()[0]:
-            pump_state = True
             pump.set_speed(speed)
             _arm_pump_safety()
-            client.publish(BASE_TOPIC + "/pump/state", "ON")
+            commit_pump_state(client)
         logger.info("Restored actuator state: %s", saved)
     except Exception as exc:
         logger.error("Failed to restore actuator state: %s", exc)

@@ -37,7 +37,7 @@ from datetime import datetime, timedelta
 import config
 from app.lib import state as state_lib
 from app.lib.locking import pump_locked
-from app.lib.water import is_reading_fresh, is_water_low
+from app.lib.water import as_utc, is_reading_fresh, is_water_low, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def water_verdict(state=None, now=None, cutoff=None):
     the level dropping is not running.
     """
     state = state_lib.load_state() if state is None else state
-    now = now or datetime.now()
+    now = now or utc_now()
     cutoff = effective_cutoff() if cutoff is None else cutoff
 
     if not cutoff:
@@ -172,18 +172,22 @@ def session(state=None, now=None):
     An expired session reads as ``None`` so that callers cannot act on a run
     whose deadline has passed. Clearing the persisted keys is the enforcing
     caller's job -- this is a read.
+
+    The deadline is judged in UTC, for the same reason ``is_reading_fresh``
+    is: a naive local deadline gains an hour on the DST fall-back night (the
+    pump runs an hour past its budget) and loses one at spring-forward. The
+    persisted stamp is offset-aware UTC; a naive one from an older build is
+    read as local time. ``until`` in the result is an aware UTC datetime.
     """
     state = state_lib.load_state() if state is None else state
-    now = now or datetime.now()
+    now = as_utc(now or utc_now())
 
     raw = state.get(UNTIL_KEY)
     if not raw:
         return None
     try:
-        until = datetime.fromisoformat(str(raw))
-        if until.tzinfo is not None:
-            until = until.astimezone().replace(tzinfo=None)
-    except (TypeError, ValueError):
+        until = as_utc(datetime.fromisoformat(str(raw)))
+    except (AttributeError, TypeError, ValueError, OverflowError, OSError):
         # A corrupt timestamp is not a licence to run the pump forever.
         logger.warning("Ignoring unparseable cleaning deadline: %r", raw)
         return None
@@ -236,7 +240,9 @@ def start(seconds=None, speed=None, now=None):
     if not (1 <= speed <= 100):
         raise ValueError("speed must be between 1 and 100")
 
-    now = now or datetime.now()
+    # Stamped in UTC so the deadline survives a DST transition unchanged; see
+    # session(). A naive ``now`` (tests, older callers) is taken as local time.
+    now = as_utc(now or utc_now())
     until = now + timedelta(seconds=seconds)
     session_id = uuid.uuid4().hex
     state_lib.save_state(
@@ -285,15 +291,20 @@ def last_result(state=None):
 
 
 def status(state=None, now=None):
-    """A serialisable snapshot for the REST API, the web UI and MQTT."""
+    """A serialisable snapshot for the REST API, the web UI and MQTT.
+
+    ``until`` is given in local time with its offset, so a person reading it
+    at the tower sees the clock on the wall, and a client parsing it is told
+    which clock that is.
+    """
     state = state_lib.load_state() if state is None else state
-    now = now or datetime.now()
+    now = now or utc_now()
     active = session(state=state, now=now)
     cutoff = effective_cutoff()
     return {
         "active": active is not None,
         "remaining_seconds": active["remaining_seconds"] if active else 0,
-        "until": active["until"].isoformat(timespec="seconds") if active else None,
+        "until": active["until"].astimezone().isoformat(timespec="seconds") if active else None,
         "started_at": active["started_at"] if active else None,
         "seconds": active["seconds"] if active else None,
         "speed": active["speed"] if active else None,
