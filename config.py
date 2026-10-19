@@ -64,7 +64,10 @@ VERSION = os.getenv("MQTT_VERSION", "1.0.0")
 # so the old "gardyn-xx" default published to `gardyn-xx/...` while HA showed
 # `sensor.gardyn_xx_...`, quietly disagreeing with itself.
 IDENTIFIER = os.getenv("MQTT_IDENTIFIER", "gardyn_01")
-MODEL = os.getenv("MQTT_DEVICE_MODEL", "gardyn 3.0")
+# The model label detect_model() falls back to when nothing on the bus says
+# which generation this is. No generation in the default: "gardyn 3.0" used to
+# be claimed for any tower detection could not place, a 1.0 included.
+MODEL = os.getenv("MQTT_DEVICE_MODEL", "gardyn")
 # Defaults to the identifier so each tower gets its own topic namespace. A
 # shared base topic is not cosmetic: mqtt.py subscribes to BASE_TOPIC + "/#",
 # so two units on the same one receive each other's commands and one tower's

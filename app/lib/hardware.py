@@ -103,6 +103,10 @@ def detect_model():
     Returns a string like ``"gardyn 3.0"``. ``GARDYN_MODEL`` (config
     ``MODEL_OVERRIDE``) short-circuits detection. Falls back to the configured
     ``MODEL`` when hardware can't be probed (e.g. off-Pi).
+
+    The chip only separates generations coarsely: a Gardyn Home 1.0 carries
+    the same AM2320 as a 2.0 and reads as ``"gardyn 2.0"`` here, so a 1.0
+    tower sets ``GARDYN_MODEL`` to be labelled correctly.
     """
     if config.MODEL_OVERRIDE:
         return config.MODEL_OVERRIDE

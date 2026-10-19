@@ -16,7 +16,8 @@ sudo systemctl status pigpiod
 sudo systemctl status mqtt.service
 sudo systemctl status mosquitto      # if the broker runs on the Pi
 ./bin/show-mqtt-logs.sh              # journalctl -u mqtt.service
-tail -f gardyn.log                   # application log (LOG_FILE)
+tail -f mqtt.log                     # MQTT service log (the REST API writes
+                                     # garden-api.log; LOG_FILE is CLI-only)
 ```
 
 ## Verifying hardware
