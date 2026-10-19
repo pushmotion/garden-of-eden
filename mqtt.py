@@ -184,15 +184,12 @@ _pump_timer_lock = threading.Lock()
 
 @pump_locked
 def _safety_pump_off():
-    global pump_state
     if cleaning_lib.is_active():
         return
     logger.warning("Pump safety cap (%ss) reached; forcing pump OFF", MAX_PUMP_RUN_SECONDS)
     try:
         pump.off()
-        pump_state = False
-        client.publish(BASE_TOPIC + "/pump/state", "OFF")
-        state_lib.save_state(pump_on=False, speed=speed)
+        commit_pump_state(client)
     except Exception as exc:
         logger.error("Safety pump-off failed: %s", exc)
 
@@ -274,17 +271,18 @@ def toggle_light():
 
 
 def _toggle_light():
-    global light_state
-    light_state = not light_state
+    # Reported through commit_light_state like the MQTT command path: it
+    # publishes state *and* brightness, retained, and syncs the toggle flag
+    # from the real duty cycle. The button used to publish a bare, unretained
+    # "ON"/"OFF" and never the brightness, so Home Assistant showed a light at
+    # the old level -- or, after its own restart, no state at all.
     if light_state:
-        logger.info("Toggling Light ON")
-        light.set_duty_cycle(brightness)
-        client.publish(BASE_TOPIC + "/light/state", "ON")
-    else:
         logger.info("Toggling Light OFF")
         light.off()
-        client.publish(BASE_TOPIC + "/light/state", "OFF")
-    state_lib.save_state(light_on=light_state, brightness=brightness)
+    else:
+        logger.info("Toggling Light ON")
+        light.set_duty_cycle(brightness)
+    commit_light_state(client)
 
 
 def toggle_pump():
@@ -296,7 +294,7 @@ def toggle_pump():
 
 @pump_locked
 def _toggle_pump():
-    global pump_state
+    global speed
     # The pump is already running during a clean, so a double-press means "make
     # it stop" -- and that has to end the *session*, not just the motor. Turning
     # the pump off under a live session would leave the watchdog holding the
@@ -304,22 +302,25 @@ def _toggle_pump():
     if cleaning_lib.is_active():
         logger.info("Button pressed during a cleaning run; ending it")
         stop_cleaning(cleaning_lib.DONE_STOPPED)
-        pump_state = False
-        client.publish(BASE_TOPIC + "/pump/state", "OFF")
+        commit_pump_state(client)
         publish_cleaning_state(client)
         return
-    pump_state = not pump_state
     if pump_state:
-        logger.info("Toggling Pump ON")
-        pump.set_speed(speed)
-        _arm_pump_safety()
-        client.publish(BASE_TOPIC + "/pump/state", "ON")
-    else:
         logger.info("Toggling Pump OFF")
         pump.off()
         _cancel_pump_safety()
-        client.publish(BASE_TOPIC + "/pump/state", "OFF")
-    state_lib.save_state(pump_on=pump_state, speed=speed)
+    else:
+        logger.info("Toggling Pump ON")
+        if speed <= 0:
+            # The same guard as the MQTT command path. A slider move to 0
+            # followed by a double press used to publish ON, arm the cap and
+            # leave the pump at 0%: a run that never happened, reported as one.
+            speed = DEFAULT_PUMP_SPEED
+        pump.set_speed(speed)
+        _arm_pump_safety()
+    # Publishes state and speed retained, syncs the toggle flag from the real
+    # duty cycle and persists for power-loss recovery -- see _toggle_light.
+    commit_pump_state(client)
 
 
 def handle_button_press():
@@ -2382,15 +2383,17 @@ def publish_images(client):
 @pump_locked
 def restore_actuator_state(client):
     """Restore light/pump to their last persisted state after a restart (#3)."""
-    global light_state, pump_state, brightness, speed
+    global pump_state, brightness, speed
     saved = state_lib.load_state()
     brightness = saved.get("brightness", brightness)
     speed = saved.get("speed", speed)
     try:
         if saved.get("light_on"):
-            light_state = True
             light.set_duty_cycle(brightness)
-            client.publish(BASE_TOPIC + "/light/state", "ON")
+            # Retained state plus brightness, and the toggle flag synced from
+            # the pin: a bare unretained "ON" left HA on the old level and left
+            # it with nothing at all after its own restart.
+            commit_light_state(client)
 
         # A cleaning run that still has time left is restored *as a cleaning
         # run*, before the ordinary pump restore below gets a chance to arm the
@@ -2405,7 +2408,7 @@ def restore_actuator_state(client):
         if resumed is not None:
             pump_state = True
             pump.set_speed(resumed["speed"])
-            client.publish(BASE_TOPIC + "/pump/state", "ON")
+            publish_pump_state(client)
             publish_cleaning_state(client)
             logger.info("Restored actuator state mid-clean: %s", saved)
             return
@@ -2414,10 +2417,9 @@ def restore_actuator_state(client):
             pump_state = False
             return
         if saved.get("pump_on") and pump_allowed()[0]:
-            pump_state = True
             pump.set_speed(speed)
             _arm_pump_safety()
-            client.publish(BASE_TOPIC + "/pump/state", "ON")
+            commit_pump_state(client)
         logger.info("Restored actuator state: %s", saved)
     except Exception as exc:
         logger.error("Failed to restore actuator state: %s", exc)
