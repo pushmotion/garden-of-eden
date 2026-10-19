@@ -48,10 +48,9 @@ def start_grow():
 def set_stage():
     data = request.get_json(silent=True) or {}
     try:
-        state = grow_lib.set_stage(grow_lib.load_state(), data.get("stage"))
+        state = grow_lib.change_stage(data.get("stage"))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
-    grow_lib.save_state(state)
     return jsonify(state)
 
 
@@ -61,6 +60,4 @@ def acknowledge():
     key = data.get("key")
     if not key:
         return jsonify(error="missing 'key'"), 400
-    state = grow_lib.acknowledge(grow_lib.load_state(), key)
-    grow_lib.save_state(state)
-    return jsonify(state)
+    return jsonify(grow_lib.acknowledge_reminder(key))

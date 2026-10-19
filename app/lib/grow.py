@@ -13,6 +13,7 @@ import json
 from datetime import datetime
 
 import config
+from app.lib.locking import file_lock
 from app.lib.persist import write_json_atomic
 
 STAGES = ["germination", "thinning", "root_check", "harvest"]
@@ -64,8 +65,38 @@ def load_state():
         return default_state()
 
 
+def _locked():
+    """The lock every load-modify-save of the grow file runs under.
+
+    The REST API and the MQTT service edit this file from separate processes.
+    Each read it, changed one field and wrote the whole thing back with no
+    lock, so an acknowledgement from one could be erased by a stage change in
+    the other that had loaded the file a moment earlier. Same mechanism as
+    ``app.lib.state``, on a lock file beside this one.
+
+    Innermost by convention: ``mqtt.on_message`` already holds the pump lock
+    when it gets here, and nothing under this lock ever takes that one.
+    """
+    return file_lock(config.GROW_STATE_FILE + ".lock")
+
+
 def save_state(state):
-    write_json_atomic(config.GROW_STATE_FILE, state)
+    with _locked():
+        write_json_atomic(config.GROW_STATE_FILE, state)
+
+
+def update(mutate):
+    """Load the state, apply ``mutate(state)`` and save it, all under the lock.
+
+    The only safe way to change one field: a caller that loads, edits and
+    saves on its own leaves a window in which another process's write is lost.
+    Returns the saved state.
+    """
+    with _locked():
+        state = load_state()
+        mutate(state)
+        save_state(state)
+        return state
 
 
 def start_cycle(now=None):
@@ -136,6 +167,11 @@ def acknowledge(state, key, now=None):
         acked.add(key)
         state["acknowledged"] = sorted(acked)
     return state
+
+
+def acknowledge_reminder(key, now=None):
+    """``acknowledge`` applied to the persisted state, under the file lock."""
+    return update(lambda state: acknowledge(state, key, now))
 
 
 def nutrient_dose(state):
@@ -244,3 +280,8 @@ def set_stage(state, stage):
         raise ValueError(f"unknown stage {stage!r}; expected one of {STAGES}")
     state["stage"] = stage
     return state
+
+
+def change_stage(stage):
+    """``set_stage`` applied to the persisted state, under the file lock."""
+    return update(lambda state: set_stage(state, stage))

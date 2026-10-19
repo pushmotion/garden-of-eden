@@ -30,6 +30,7 @@ import shlex
 import subprocess
 
 import config
+from app.lib.locking import file_lock
 from app.lib.persist import write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -151,8 +152,26 @@ def load_schedule():
         return normalize_schedule(DEFAULT_SCHEDULE)
 
 
+def locked():
+    """The lock every read-modify-write of the schedule and the crontab runs under.
+
+    ``apply_schedule`` and the one-off helpers each read the crontab, keep or
+    drop lines, and write the whole thing back; the REST API, the MQTT service
+    and the nightly refresh all do so from separate processes, and the MQTT
+    setters load the saved schedule first. None of it was serialised, so two
+    edits a moment apart could lose one -- or, worse, a one-off written between
+    another writer's read and write could vanish from the crontab.
+
+    Public so a caller that loads, edits and applies can hold it across the
+    whole sequence. Innermost by convention: ``mqtt.on_message`` already holds
+    the pump lock when it gets here, and nothing under this lock takes that one.
+    """
+    return file_lock(config.SCHEDULE_FILE + ".lock")
+
+
 def save_schedule(schedule):
-    write_json_atomic(config.SCHEDULE_FILE, schedule)
+    with locked():
+        write_json_atomic(config.SCHEDULE_FILE, schedule)
 
 
 def _hh_mm(value):
@@ -433,12 +452,13 @@ def apply_schedule(schedule):
     # Validate/compile first so a bad schedule never touches crontab.
     schedule = normalize_schedule(schedule, strict=True)
     cron_lines = build_cron_lines(schedule)
-    save_schedule(schedule)
+    with locked():
+        save_schedule(schedule)
 
-    # Keep foreign lines, and keep one-shot runs: adding or applying a recurring
-    # schedule must never cancel a pending one-off.
-    existing = [ln for ln in _read_crontab() if CRON_MARKER not in ln or ONCE_MARKER in ln]
-    _write_crontab(existing + cron_lines)
+        # Keep foreign lines, and keep one-shot runs: adding or applying a
+        # recurring schedule must never cancel a pending one-off.
+        existing = [ln for ln in _read_crontab() if CRON_MARKER not in ln or ONCE_MARKER in ln]
+        _write_crontab(existing + cron_lines)
     logger.info("Applied schedule with %d cron entries", len(cron_lines))
     return schedule
 
@@ -447,16 +467,17 @@ def refresh():
     """Re-apply the saved schedule, turning Vacation mode off once its end date
     has passed. Run nightly via cron so vacation auto-expires to the normal
     schedule."""
-    schedule = load_schedule()
-    vacation = schedule.get("vacation") or {}
-    if vacation.get("enabled") and not is_vacation_active(schedule):
-        vacation["enabled"] = False
-        schedule["vacation"] = vacation
-        logger.info("Vacation mode expired; reverting to the normal schedule")
-    applied = apply_schedule(schedule)
-    # A dated one-shot entry carries no year, so a spent one would fire again in
-    # twelve months. This nightly pass is where they get cleaned up.
-    prune_one_time_pump_runs()
+    with locked():
+        schedule = load_schedule()
+        vacation = schedule.get("vacation") or {}
+        if vacation.get("enabled") and not is_vacation_active(schedule):
+            vacation["enabled"] = False
+            schedule["vacation"] = vacation
+            logger.info("Vacation mode expired; reverting to the normal schedule")
+        applied = apply_schedule(schedule)
+        # A dated one-shot entry carries no year, so a spent one would fire
+        # again in twelve months. This nightly pass is where they get cleaned up.
+        prune_one_time_pump_runs()
     return applied
 
 
@@ -515,23 +536,24 @@ def prune_one_time_pump_runs(now=None, write=True):
     that is about to write anyway does not need two passes.
     """
     now = now or datetime.datetime.now()
-    try:
-        lines = _read_crontab()
-    except CrontabUnreadable as exc:
-        logger.warning("Not pruning one-time runs: %s", exc)
-        return []
-    if not lines:
-        # genuinely empty -- nothing to prune and nothing to write.
-        return []
-    kept = []
-    for line in lines:
-        parsed = _parse_once_line(line)
-        if parsed and parsed[0] <= now:
-            logger.info("Pruning expired one-time pump run: %s", parsed[0].isoformat())
-            continue
-        kept.append(line)
-    if write and len(kept) != len(lines):
-        _write_crontab(kept)
+    with locked():
+        try:
+            lines = _read_crontab()
+        except CrontabUnreadable as exc:
+            logger.warning("Not pruning one-time runs: %s", exc)
+            return []
+        if not lines:
+            # genuinely empty -- nothing to prune and nothing to write.
+            return []
+        kept = []
+        for line in lines:
+            parsed = _parse_once_line(line)
+            if parsed and parsed[0] <= now:
+                logger.info("Pruning expired one-time pump run: %s", parsed[0].isoformat())
+                continue
+            kept.append(line)
+        if write and len(kept) != len(lines):
+            _write_crontab(kept)
     return kept
 
 
@@ -548,27 +570,29 @@ def add_one_time_pump_run(hhmm, duration_minutes, now=None):
         f"{when.minute} {when.hour} {when.day} {when.month} * "
         f"{WATER_CMD} {seconds} {ONCE_MARKER} {when.isoformat()}"
     )
-    # Read the crontab directly rather than through the pruner's lenient
-    # fallback: an unreadable crontab must raise here, or the write below would
-    # replace the recurring schedule with just the one-off.
-    _read_crontab()
-    kept = prune_one_time_pump_runs(now=now, write=False)
-    if not any("schedule-refresh.sh" in entry for entry in kept):
-        kept.append(f"2 0 * * * {shlex.quote(REFRESH_CMD)} {CRON_MARKER}")
-    _write_crontab(kept + [line])
+    with locked():
+        # Read the crontab directly rather than through the pruner's lenient
+        # fallback: an unreadable crontab must raise here, or the write below
+        # would replace the recurring schedule with just the one-off.
+        _read_crontab()
+        kept = prune_one_time_pump_runs(now=now, write=False)
+        if not any("schedule-refresh.sh" in entry for entry in kept):
+            kept.append(f"2 0 * * * {shlex.quote(REFRESH_CMD)} {CRON_MARKER}")
+        _write_crontab(kept + [line])
     logger.info("Scheduled a one-time pump run at %s for %ss", when.isoformat(), seconds)
     return {"at": when, "seconds": seconds}
 
 
 def clear_one_time_pump_runs():
     """Remove every pending one-shot run. Returns how many lines were removed."""
-    lines = _read_crontab()
-    if not lines:
-        return 0
-    kept = [line for line in lines if ONCE_MARKER not in line]
-    removed = len(lines) - len(kept)
-    if removed:
-        _write_crontab(kept)
+    with locked():
+        lines = _read_crontab()
+        if not lines:
+            return 0
+        kept = [line for line in lines if ONCE_MARKER not in line]
+        removed = len(lines) - len(kept)
+        if removed:
+            _write_crontab(kept)
     return removed
 
 

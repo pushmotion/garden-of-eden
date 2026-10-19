@@ -1873,11 +1873,17 @@ def _apply_schedule(client, schedule):
     publish_schedule_state(client)
 
 
+# Each setter below loads the saved schedule, edits it and applies it. The
+# whole sequence runs under the schedule lock, which the REST API's apply and
+# the nightly refresh also take, so a write from another process cannot land
+# between the load and the apply and be silently overwritten. The lock is taken
+# inside the pump lock on_message already holds, never the other way round.
 def _set_schedule_flag(client, section, enabled):
     """Flip a top-level schedule enable flag, rewrite crontab, and republish state."""
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    schedule[section]["enabled"] = enabled
-    _apply_schedule(client, schedule)
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        schedule[section]["enabled"] = enabled
+        _apply_schedule(client, schedule)
 
 
 def _set_light_brightness(client, brightness):
@@ -1887,20 +1893,23 @@ def _set_light_brightness(client, brightness):
     window rather than a description of the day, so it applies to all of them
     and the window count is untouched.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    touched = 0
-    for day in sched_lib.DAYS:
-        for window in schedule["lights"]["days"][day]:
-            window["brightness"] = brightness
-            touched += 1
-    if not touched:
-        # Nothing scheduled yet, so seed a window per day rather than doing nothing.
-        seed = _everyday_light(schedule)
-        seed["brightness"] = brightness
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        touched = 0
         for day in sched_lib.DAYS:
-            schedule["lights"]["days"][day] = [dict(seed)]
-    logger.info("Set light brightness to %s%% across %s existing window(s)", brightness, touched)
-    _apply_schedule(client, schedule)
+            for window in schedule["lights"]["days"][day]:
+                window["brightness"] = brightness
+                touched += 1
+        if not touched:
+            # Nothing scheduled yet, so seed a window per day rather than doing nothing.
+            seed = _everyday_light(schedule)
+            seed["brightness"] = brightness
+            for day in sched_lib.DAYS:
+                schedule["lights"]["days"][day] = [dict(seed)]
+        logger.info(
+            "Set light brightness to %s%% across %s existing window(s)", brightness, touched
+        )
+        _apply_schedule(client, schedule)
 
 
 def _set_light_first_window(client, **changes):
@@ -1912,18 +1921,19 @@ def _set_light_first_window(client, **changes):
     Moving one window is a predictable, reversible edit; collapsing the day to
     it is not.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    # Resolved once: appending to an empty day would otherwise change what the
-    # representative window is for the days after it.
-    seed = _everyday_light(schedule)
-    for day in sched_lib.DAYS:
-        windows = schedule["lights"]["days"][day]
-        if windows:
-            windows[0].update(changes)
-        else:
-            windows.append({**seed, **changes})
-    logger.info("Updated the first light window of each day: %s", changes)
-    _apply_schedule(client, schedule)
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        # Resolved once: appending to an empty day would otherwise change what
+        # the representative window is for the days after it.
+        seed = _everyday_light(schedule)
+        for day in sched_lib.DAYS:
+            windows = schedule["lights"]["days"][day]
+            if windows:
+                windows[0].update(changes)
+            else:
+                windows.append({**seed, **changes})
+        logger.info("Updated the first light window of each day: %s", changes)
+        _apply_schedule(client, schedule)
 
 
 def _set_pump_duration(client, minutes):
@@ -1934,18 +1944,19 @@ def _set_pump_duration(client, minutes):
     seven 3-minute runs became one. This keeps every run and changes only how
     long each lasts, which is what the control appears to promise.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    touched = 0
-    for day in sched_lib.DAYS:
-        for run in schedule["pump"]["days"][day]:
-            run["duration"] = minutes
-            touched += 1
-    if not touched:
-        # Nothing scheduled yet, so seed a run per day rather than doing nothing.
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        touched = 0
         for day in sched_lib.DAYS:
-            schedule["pump"]["days"][day] = [{"time": "12:00", "duration": minutes}]
-    logger.info("Set pump duration to %s min across %s existing run(s)", minutes, touched)
-    _apply_schedule(client, schedule)
+            for run in schedule["pump"]["days"][day]:
+                run["duration"] = minutes
+                touched += 1
+        if not touched:
+            # Nothing scheduled yet, so seed a run per day rather than doing nothing.
+            for day in sched_lib.DAYS:
+                schedule["pump"]["days"][day] = [{"time": "12:00", "duration": minutes}]
+        logger.info("Set pump duration to %s min across %s existing run(s)", minutes, touched)
+        _apply_schedule(client, schedule)
 
 
 def _set_pump_first_time(client, hhmm):
@@ -1954,15 +1965,16 @@ def _set_pump_first_time(client, hhmm):
     A single scalar cannot express a multi-run day. Moving one run is a
     predictable, reversible edit; collapsing the day to it is not.
     """
-    schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
-    for day in sched_lib.DAYS:
-        runs = schedule["pump"]["days"][day]
-        if runs:
-            runs[0]["time"] = hhmm
-        else:
-            runs.append({"time": hhmm, "duration": sched_lib.default_pump_duration(schedule)})
-    logger.info("Moved the first pump run of each day to %s", hhmm)
-    _apply_schedule(client, schedule)
+    with sched_lib.locked():
+        schedule = sched_lib.normalize_schedule(sched_lib.load_schedule())
+        for day in sched_lib.DAYS:
+            runs = schedule["pump"]["days"][day]
+            if runs:
+                runs[0]["time"] = hhmm
+            else:
+                runs.append({"time": hhmm, "duration": sched_lib.default_pump_duration(schedule)})
+        logger.info("Moved the first pump run of each day to %s", hhmm)
+        _apply_schedule(client, schedule)
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -2145,9 +2157,9 @@ def on_message(client, userdata, msg):
 
         # === Grow cycle (HA control) ===
         elif topic_suffix == "grow/stage/set":
-            grow_state = grow_lib.load_state()
-            grow_lib.set_stage(grow_state, payload)
-            grow_lib.save_state(grow_state)
+            # Load-modify-save under the grow file's own lock: the REST API
+            # edits the same file from another process.
+            grow_lib.change_stage(payload)
             publish_grow_state(client)
 
         elif topic_suffix == "grow/start/set":
@@ -2159,9 +2171,7 @@ def on_message(client, userdata, msg):
             # payload_press. Republishing includes grow/food, so the alarm
             # clears in the same round trip rather than waiting for the
             # half-hourly reminder thread.
-            grow_state = grow_lib.load_state()
-            grow_lib.acknowledge(grow_state, payload)
-            grow_lib.save_state(grow_state)
+            grow_lib.acknowledge_reminder(payload)
             logger.info("Acknowledged grow reminder: %s", payload)
             publish_grow_state(client)
 
