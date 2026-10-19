@@ -650,9 +650,13 @@ def record_water_reading(distance):
             previous = state_lib.load_state().get("pump_blocked")
             if previous is not None:
                 blocked = bool(previous)
+        # Stamped in UTC with its offset. A naive local stamp was unreadable
+        # for the hour after a DST fall-back -- every reading in it looked
+        # like the future, so watering failed open and cleaning failed closed
+        # -- and the guards judge it in UTC now (app.lib.water).
         state_lib.save_state(
             water_airgap_cm=round(float(distance), 2),
-            water_checked_at=datetime.now().isoformat(timespec="seconds"),
+            water_checked_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             pump_blocked=blocked,
         )
     except Exception:

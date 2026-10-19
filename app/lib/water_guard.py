@@ -25,7 +25,7 @@ from datetime import datetime
 
 import config
 from app.lib import state as state_lib
-from app.lib.water import is_reading_fresh
+from app.lib.water import is_reading_fresh, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,14 @@ ALLOW, REFUSE = 0, 1
 
 
 def pump_allowed(state=None, now=None):
-    """Return ``(allowed, reason)`` for the persisted water verdict."""
+    """Return ``(allowed, reason)`` for the persisted water verdict.
+
+    ``now`` defaults to aware UTC: a naive local "now" is ambiguous for the
+    hour after a DST fall-back, which made every reading in that hour look
+    stale (see ``is_reading_fresh``).
+    """
     state = state_lib.load_state() if state is None else state
-    now = now or datetime.now()
+    now = now or utc_now()
 
     checked_at = state.get("water_checked_at")
     if not is_reading_fresh(checked_at, now, config.WATER_READING_MAX_AGE_SECONDS):

@@ -534,6 +534,13 @@ genuinely below the cutoff. Worth re-running after any change to
 silent — a guard that refuses when it should allow looks identical to a guard
 working correctly until the plants dry out.
 
+The verdict's timestamp (and the cleaning deadline) is written as offset-aware
+UTC and judged in UTC. It used to be naive local time, which repeats an hour on
+the DST fall-back night: every reading taken in that hour looked like the
+future, so the guard called it stale for the whole hour — watering failed open
+and cleaning failed closed — and a cleaning run gained an hour on its budget. A
+naive stamp left by an older build is still read as local time.
+
 ### Seeing a refused run
 
 A refusal used to be silent. cron emails a job's output and the Pi has no
