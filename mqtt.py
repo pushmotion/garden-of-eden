@@ -166,6 +166,14 @@ double_press_timer = None
 AVAILABILITY_TOPIC = BASE_TOPIC + "/availability"
 LOG_TOPIC = BASE_TOPIC + "/log"
 
+# Home Assistant's MQTT reset sentinel (homeassistant/components/mqtt/const.py,
+# PAYLOAD_NONE): a number or sensor that receives it reads *unknown*. The
+# literal "unavailable" sent before was no sentinel at all -- "unavailable" is a
+# state HA derives from the availability topic, never a payload it accepts. A
+# number entity could not parse it, and the timestamp sensors logged an
+# invalid-state warning on every publish while the schedule was empty.
+PAYLOAD_NONE = "None"
+
 # Pump safety: never let the pump run longer than the hard cap, no matter how it
 # was turned on (HA command or physical button). Mirrors the REST API watchdog.
 _pump_off_timer = None
@@ -782,19 +790,19 @@ def publish_water_thresholds(client):
     same reason "Max Pump Run Time" does: it is a safety limit, not a per-run
     setting. Seeing it matters; nudging it from a phone does not.
     """
-    # "unavailable" rather than silence when alerting is off: Home Assistant
-    # greys the control out, which says "this does nothing right now". Publishing
-    # nothing leaves it blank forever, indistinguishable from a service that
-    # never started.
+    # The reset sentinel rather than silence when alerting is off: Home
+    # Assistant shows the control as unknown, which says "this does nothing
+    # right now". Publishing nothing leaves it blank forever, indistinguishable
+    # from a service that never started.
     client.publish(
         BASE_TOPIC + "/water/low/cm",
-        f"{WATER_LOW_CM:.2f}" if WATER_LOW_CM else "unavailable",
+        f"{WATER_LOW_CM:.2f}" if WATER_LOW_CM else PAYLOAD_NONE,
         retain=True,
     )
     cutoff = effective_pump_cutoff()
     client.publish(
         BASE_TOPIC + "/water/pump/cutoff",
-        f"{cutoff:.2f}" if cutoff else "unavailable",
+        f"{cutoff:.2f}" if cutoff else PAYLOAD_NONE,
         retain=True,
     )
 
@@ -1642,7 +1650,7 @@ def publish_one_time_state(client):
             BASE_TOPIC + "/schedule/pump/max_seconds", str(MAX_PUMP_RUN_SECONDS), retain=True
         )
         pending = sched_lib.one_time_pump_runs()
-        payload = pending[0]["at"].astimezone().isoformat() if pending else "unavailable"
+        payload = pending[0]["at"].astimezone().isoformat() if pending else PAYLOAD_NONE
         client.publish(BASE_TOPIC + "/schedule/pump/once/next", payload, retain=True)
     except Exception:
         logger.exception("Error publishing one-time pump run state")
@@ -1699,7 +1707,7 @@ def publish_cleaning_state(client):
         cutoff = status["cutoff_cm"]
         client.publish(
             BASE_TOPIC + "/pump/clean/cutoff",
-            f"{cutoff:.2f}" if cutoff else "unavailable",
+            f"{cutoff:.2f}" if cutoff else PAYLOAD_NONE,
             retain=True,
         )
     except Exception:
@@ -1833,13 +1841,13 @@ def arm_one_time_pump_run(client):
 def _next_pump_payload():
     """The next scheduled pump run as ISO 8601 with a UTC offset, which is what
     Home Assistant's timestamp device_class needs to render a relative time
-    ("in 2 hours"). "unavailable" when the pump schedule is off or empty."""
+    ("in 2 hours"). The reset sentinel when the pump schedule is off or empty."""
     try:
         upcoming = sched_lib.next_pump_run(sched_lib.load_schedule())
     except Exception:
         logger.exception("Error computing the next pump run")
-        return "unavailable"
-    return upcoming.astimezone().isoformat() if upcoming else "unavailable"
+        return PAYLOAD_NONE
+    return upcoming.astimezone().isoformat() if upcoming else PAYLOAD_NONE
 
 
 def publish_next_pump_run(client):

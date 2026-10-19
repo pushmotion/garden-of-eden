@@ -65,12 +65,16 @@ class WaterThresholdTestCase(unittest.TestCase):
         self.assertEqual(self.published_for("water/pump/cutoff"), ["17.60"])
 
     def test_alerting_disabled_publishes_no_threshold(self):
-        """Both go out as "unavailable" so HA greys the control instead of blanking it."""
+        """Both go out as HA's reset sentinel, so the entities read unknown.
+
+        This used to pin "unavailable", which HA never accepts as a payload: the
+        number entity could not parse it and the sensor showed it as a value.
+        """
         self.mqtt.WATER_LOW_CM = None
         with mock.patch.object(self.mqtt, "PUMP_CUTOFF_CM", None):
             self.mqtt.publish_water_thresholds(self.client)
-        self.assertEqual(self.published_for("water/low/cm"), ["unavailable"])
-        self.assertEqual(self.published_for("water/pump/cutoff"), ["unavailable"])
+        self.assertEqual(self.published_for("water/low/cm"), ["None"])
+        self.assertEqual(self.published_for("water/pump/cutoff"), ["None"])
 
     def test_a_threshold_set_from_ha_survives_a_restart(self):
         """The whole point: the service and the dashboard must not diverge."""
