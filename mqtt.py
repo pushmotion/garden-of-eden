@@ -68,6 +68,7 @@ from config import (
     PUMP_CUTOFF_CM,
     SUGGESTED_AREA,
     TANK_CAPACITY_GALLONS,
+    TELEMETRY_INTERVAL_SECONDS,
     UPPER_CAMERA_DEVICE,
     UPPER_IMAGE_PATH,
     USERNAME,
@@ -121,11 +122,12 @@ except Exception:
 # here as well as in the persisted-state defaults.
 brightness = DEFAULT_BRIGHTNESS
 speed = DEFAULT_PUMP_SPEED
-sec_per_min = 60
-min_per_hr = 60
 
-# publish twice an hour
-publish_frequency = sec_per_min * min_per_hr / 2
+# Cadence of the slow telemetry loops (ambient temperature, humidity, PCB
+# temperature, grow reminders). One config value so the four cannot drift
+# apart: three of them slept a hard-coded 30 * 60 while this held the same
+# number and only the grow loop read it.
+publish_frequency = TELEMETRY_INTERVAL_SECONDS
 
 # Button GPIO setup using gpiozero
 button_pin = BUTTON_PIN
@@ -711,13 +713,18 @@ def publish_water_readings(client, distance):
     """
     readings = tank_readings(distance, WATER_FULL_CM, WATER_EMPTY_CM, TANK_CAPACITY_GALLONS)
 
-    client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}")
+    # Retained, like every other telemetry topic: Home Assistant drops its
+    # MQTT state on restart and would otherwise show every one of these as
+    # unknown until the next poll -- up to TELEMETRY_INTERVAL_SECONDS for the
+    # ambient readings. The availability topic greys them out when the service
+    # is actually gone, so a retained last value never masquerades as live.
+    client.publish(BASE_TOPIC + "/water/level", f"{distance:.2f}", retain=True)
     if readings["depth_cm"] is not None:
-        client.publish(BASE_TOPIC + "/water/depth", f"{readings['depth_cm']:.2f}")
+        client.publish(BASE_TOPIC + "/water/depth", f"{readings['depth_cm']:.2f}", retain=True)
     if readings["percent"] is not None:
-        client.publish(BASE_TOPIC + "/water/percent", f"{readings['percent']:.0f}")
+        client.publish(BASE_TOPIC + "/water/percent", f"{readings['percent']:.0f}", retain=True)
     if readings["gallons"] is not None:
-        client.publish(BASE_TOPIC + "/water/gallons", f"{readings['gallons']:.1f}")
+        client.publish(BASE_TOPIC + "/water/gallons", f"{readings['gallons']:.1f}", retain=True)
     publish_grow_state(client)
 
 
@@ -2125,15 +2132,15 @@ def on_message(client, userdata, msg):
         # === Sensor Data on Request ===
         elif topic_suffix == "pcb/temperature/get":
             pcb_temp = get_pcb_temperature()
-            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}")
+            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}", retain=True)
 
         elif topic_suffix == "temperature/get":
             temperature = temperature_sensor.read()
-            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}")
+            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}", retain=True)
 
         elif topic_suffix == "humidity/get":
             humidity = humidity_sensor.read()
-            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}")
+            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}", retain=True)
 
         # === Grow cycle (HA control) ===
         elif topic_suffix == "grow/stage/set":
@@ -2226,13 +2233,13 @@ def publish_pcb_temperature(client):
         try:
             pcb_temp = get_pcb_temperature()
             logger.info(f"Publishing PCB Temperature: {pcb_temp:.2f}°C")
-            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}")
+            client.publish(BASE_TOPIC + "/pcb/temperature", f"{pcb_temp:.2f}", retain=True)
             # The pin's own edges publish immediately; this is the periodic
             # resync, so a missed edge cannot leave HA stuck on a stale state.
             publish_over_temp_state(client)
         except Exception as e:
             logger.error(f"Failed to read or publish PCB temperature: {e}")
-        sleep(30 * 60)  # Publish frequency, every x seconds
+        sleep(publish_frequency)
 
 
 def publish_temperature(client):
@@ -2240,10 +2247,10 @@ def publish_temperature(client):
         try:
             temperature = temperature_sensor.read()
             logger.info(f"Publishing Temperature: {temperature:.2f}°C")
-            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}")
+            client.publish(BASE_TOPIC + "/temperature", f"{temperature:.2f}", retain=True)
         except Exception as e:
             logger.error(f"Failed to read or publish ambient temperature: {e}")
-        sleep(30 * 60)  # Publish frequency, every x seconds
+        sleep(publish_frequency)
 
 
 def publish_humidity(client):
@@ -2251,10 +2258,10 @@ def publish_humidity(client):
         try:
             humidity = humidity_sensor.read()
             logger.info(f"Publishing Humidity: {humidity:.2f}%")
-            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}")
+            client.publish(BASE_TOPIC + "/humidity", f"{humidity:.2f}", retain=True)
         except Exception as e:
             logger.error(f"Failed to read or publish ambient humidity: {e}")
-        sleep(30 * 60)  # Publish frequency, every x seconds
+        sleep(publish_frequency)
 
 
 def publish_water_level(client):
@@ -2319,16 +2326,22 @@ def refresh_all(client):
         ("water low state", lambda: update_water_low_state(client)),
         (
             "pcb temperature",
-            lambda: client.publish(BASE_TOPIC + "/pcb/temperature", f"{get_pcb_temperature():.2f}"),
+            lambda: client.publish(
+                BASE_TOPIC + "/pcb/temperature", f"{get_pcb_temperature():.2f}", retain=True
+            ),
         ),
         ("pcb over-temp state", lambda: publish_over_temp_state(client)),
         (
             "temperature",
-            lambda: client.publish(BASE_TOPIC + "/temperature", f"{temperature_sensor.read():.2f}"),
+            lambda: client.publish(
+                BASE_TOPIC + "/temperature", f"{temperature_sensor.read():.2f}", retain=True
+            ),
         ),
         (
             "humidity",
-            lambda: client.publish(BASE_TOPIC + "/humidity", f"{humidity_sensor.read():.2f}"),
+            lambda: client.publish(
+                BASE_TOPIC + "/humidity", f"{humidity_sensor.read():.2f}", retain=True
+            ),
         ),
         ("light state", lambda: publish_light_state(client)),
         ("pump state", lambda: publish_pump_state(client)),

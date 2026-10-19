@@ -267,6 +267,14 @@ WATER_READING_MAX_AGE_SECONDS = _get_int("WATER_READING_MAX_AGE_SECONDS", WATER_
 # Assistant drifts out of step with reality. 0 disables the poll.
 ACTUATOR_POLL_SECONDS = _get_int("ACTUATOR_POLL_SECONDS", 15)
 
+# How often (seconds) the MQTT service publishes the slow telemetry: ambient
+# temperature and humidity, PCB temperature, and the grow-cycle reminders.
+# These move slowly, and each ambient read is a bus transaction the AM2320/
+# DHT20 occasionally answers with the wrong value (app/lib/ambient.py), so the
+# default is half an hour rather than the water poll's three minutes. One value
+# for every loop: three of them used to sleep a hard-coded 30 * 60.
+TELEMETRY_INTERVAL_SECONDS = _get_int("TELEMETRY_INTERVAL_SECONDS", 1800)
+
 # Which unit system clients should display by default: "metric" (cm, C, L) or
 # "imperial" (in, F, gal). This is a *presentation* default only -- the tower
 # always measures, stores, publishes and calibrates in metric, exactly as it
